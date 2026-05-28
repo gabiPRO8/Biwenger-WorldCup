@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Biwenger Intel · CAFELITOS MUNDIAL</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#080c12;font-family:'Barlow',sans-serif;color:#e2e8f0}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#0d1117}
+::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ─── CONFIG ─────────────────────────────────────────────────────────────────
+const LEAGUE_ID    = 2057487;
+const OWN_USER_ID  = 13532644;
+const START_BUDGET = 20_000_000;
+const DEFAULT_TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOjI3NDkyMzY3LCJpYXQiOjE3NzE1NzcxMjh9.lszJyow_zzpVI7uAx1ZhYOxNiCS6njTM1LWlk64pPG8";
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+const fmt  = n => n==null ? "—" : `${(n/1_000_000).toFixed(2)}M`;
+const fmtK = n => n==null ? "—" : n>=1_000_000 ? `${(n/1_000_000).toFixed(2)}M` : n>=1000 ? `${(n/1000).toFixed(0)}K` : String(n);
+const fmtDate = ts => new Date(ts*1000).toLocaleDateString("es-ES",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+const initials = name => (name||"??").split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+const balClass = b => b>15_000_000?"rich":b>5_000_000?"mid":"tight";
+
+// ─── API ─────────────────────────────────────────────────────────────────────
+const makeApi = (token, leagueId=LEAGUE_ID) => async (path, opts={}) => {
+  const res = await fetch(`http://localhost:8080${path}`, {
+    credentials: "include",
+    headers: {
+      "Authorization": token,
+      "Content-Type":  "application/json",
+      "X-League":      String(leagueId),
+      "X-Version":     "630",
+      "X-User":        String(OWN_USER_ID),
+      "Accept":        "application/json, text/plain, */*",
+    },
+    ...opts
+  });
+  if(res.status===304) return null;
+  const contentType = res.headers.get("content-type") || "";
+  if(!res.ok) {
+    const errorBody = contentType.includes("application/json")
+      ? JSON.stringify(await res.json())
+      : (await res.text()).slice(0, 300);
+    const looksLikeHtml = /<(!doctype|html|title)/i.test(errorBody);
+    if(looksLikeHtml) throw new Error(`HTML response → ${path} :: token invalid or expired`);
+    throw new Error(`HTTP ${res.status} → ${path} :: ${errorBody}`);
+  }
+  if(!contentType.includes("application/json")) {
+    const text = (await res.text()).slice(0, 300);
+    const looksLikeHtml = /<(!doctype|html|title)/i.test(text);
+    if(looksLikeHtml) throw new Error(`HTML response → ${path} :: token invalid or expired`);
+    throw new Error(`Non-JSON response → ${path} :: ${text}`);
+  }
+  const j = await res.json();
+  return j.data !== undefined ? j.data : j;
+};
+
+// ─── CACHE (localStorage) ─────────────────────────────────────────────────────
+const CACHE_KEY_BOARD   = `biw_board_${LEAGUE_ID}`;
+const CACHE_KEY_MEMBERS = `biw_members_${LEAGUE_ID}`;
+
+const cacheSave = (board, members) => {
+  try {
+    const lastEventDate = board.length > 0 ? Math.max(...board.map(e => e.date)) : 0;
+    localStorage.setItem(CACHE_KEY_BOARD,   JSON.stringify({ board, lastEventDate, savedAt: Date.now() }));
+    localStorage.setItem(CACHE_KEY_MEMBERS, JSON.stringify({ members, savedAt: Date.now() }));
+  } catch(e){ console.warn("Cache write failed:", e); }
+};
+
+const cacheLoad = () => {
+  try {
+    const b = localStorage.getItem(CACHE_KEY_BOARD);
+    const m = localStorage.getItem(CACHE_KEY_MEMBERS);
+    return { board: b ? JSON.parse(b) : null, members: m ? JSON.parse(m) : null };
+  } catch(e){ return { board: null, members: null }; }
+};
+
+const cacheClear = () => {
+  localStorage.removeItem(CACHE_KEY_BOARD);
+  localStorage.removeItem(CACHE_KEY_MEMBERS);
+};
+
+// ─── PLAYER MAPPER ────────────────────────────────────────────────────────────
+async function fetchPlayerMap(api, leagueId) {
+  const map = {};
+  const tried = [];
+
+  // Strategy 0: cf.biwenger.com competition data — full player list (~1300 jugadores), JSONP
+  try {
+    tried.push("/cfapi/v2/competitions/world-cup/data (JSONP)");
+    const text = await fetch(`/cfapi/v2/competitions/world-cup/data?lang=en&score=3&callback=BIW_CB`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); });
+    // Strip JSONP wrapper: BIW_CB({...}); → parse inner JSON
+    const json = JSON.parse(text.replace(/^[^(]+\(/, "").replace(/\);?\s*$/, ""));
+    const raw = json?.data?.players || json?.players || {};
+    const entries = Array.isArray(raw) ? raw : Object.values(raw);
+    for (const p of entries) {
+      if (!p?.id) continue;
+      map[p.id] = {
+        name:     p.name || p.n  || `#${p.id}`,
+        slug:     p.slug || p.s  || null,
+        position: p.position !== undefined ? p.position : (p.p ?? null),
+        price:    p.price    || p.v  || p.value || null,
+        team:     p.team?.name || p.t?.n || null,
+        teamId:   p.teamID   || p.t?.id || null,
+      };
+    }
+    console.log(`✅ Player map (JSONP): ${Object.keys(map).length} jugadores`);
+  } catch(e) {
+    console.warn("JSONP player fetch failed:", e.message);
+  }
+
+  // Si ya tenemos mapa completo, no hace falta seguir
+  if (Object.keys(map).length > 100) return { map, tried };
+
+  // Strategy 1: market endpoint (player objects con nombres)
+  try {
+    tried.push("/api/v2/market");
+    const mkt = await api("/api/v2/market");
+    const sales = mkt?.sales || mkt?.data?.sales || [];
+    for(const s of sales){
+      const p = s.player;
+      if(p?.id && p?.name) map[p.id] = { name: p.name, position: p.position, price: p.price, team: p.teamID };
+    }
+  } catch(e){}
+
+  // Strategy 2: league/competition players endpoints
+  const playerEndpoints = [
+    `/api/v2/league/${leagueId}/players`,
+    `/api/v2/players?competition=world-cup&limit=500&offset=0`,
+    `/api/v2/competitions/world-cup/players?limit=500`,
+  ];
+  for(const ep of playerEndpoints){
+    try {
+      tried.push(ep);
+      const data = await api(ep);
+      const players = Array.isArray(data) ? data : (data?.players || data?.data || []);
+      if(players.length > 0){
+        for(const p of players){
+          if(p?.id && p?.name) map[p.id] = { name: p.name, position: p.position, price: p.price, team: p.teamID };
+        }
+        if(Object.keys(map).length > 10) break;
+      }
+    } catch(e){}
+  }
+
+  return { map, tried };
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [token, setToken]           = useState(DEFAULT_TOKEN);
+  const [tab, setTab]               = useState("balances");
+  const [loading, setLoading]       = useState(false);
+  const [loadStep, setLoadStep]     = useState("");
+  const [error, setError]           = useState(null);
+  const [ownBalance, setOwnBalance] = useState(null);
+  const [members, setMembers]       = useState({});
+  const [playerMap, setPlayerMap]   = useState({});
+  const [playerEndpoints, setPlayerEndpoints] = useState([]);
+  const [board, setBoard]           = useState([]);
+  const [balances, setBalances]     = useState({});
+  const [marketData, setMarketData] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [filterUser, setFilterUser] = useState("all");
+  const [selectedMgr, setSelectedMgr] = useState(null);
+  const [cacheInfo, setCacheInfo]   = useState(null); // {savedAt, count, newCount}
+
+  const apiRef = useRef(makeApi(token));
+  useEffect(() => {
+    apiRef.current = makeApi(token);
+    // Sincronizar token con el servidor para que las alertas de email funcionen
+    if (token && token.length > 20) {
+      fetch("/api-local/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      }).catch(() => {});
+    }
+  }, [token]);
+
+  // ── Fetch paginated board (incremental: solo eventos tras sinceDate) ──
+  // La API devuelve eventos newest-first; paramos cuando encontramos eventos ya cacheados.
+  const fetchBoard = async (sinceDate = 0) => {
+    const newEvents = [];
+    let offset = 0;
+    const limit = 16;
+    while(true){
+      setLoadStep(`Tablón... ${sinceDate > 0 ? "actualizando" : "cargando"} offset ${offset}`);
+      const raw = await apiRef.current(`/api/v2/league/${LEAGUE_ID}/board?offset=${offset}&limit=${limit}`);
+      if(!raw) break;
+      const items = Array.isArray(raw) ? raw : (raw.board || raw.events || []);
+      if(!items.length) break;
+      if(sinceDate > 0){
+        newEvents.push(...items.filter(e => e.date > sinceDate));
+        if(items.some(e => e.date <= sinceDate)) break; // llegamos a eventos ya cacheados
+      } else {
+        newEvents.push(...items);
+      }
+      if(items.length < limit) break;
+      offset += limit;
+    }
+    return newEvents;
+  };
+
+  // ── Extract players from board events ──
+  const extractPlayersFromBoard = (events) => {
+    const map = {};
+    for(const ev of events){
+      for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+        const p = c.player;
+        if(p && typeof p === "object" && p.id && p.name){
+          map[p.id] = { name: p.name, position: p.position, price: p.price };
+        }
+      }
+    }
+    return map;
+  };
+
+  // ── Extract members (users) from board from/to fields (solo transfer/market) ──
+  const extractMembersFromBoard = (events) => {
+    const members = {};
+    for(const ev of events){
+      if(ev.type !== "transfer" && ev.type !== "market") continue;
+      for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+        if(c.from?.id && c.from?.name) members[c.from.id] = { name: c.from.name, icon: c.from.icon || "" };
+        if(c.to?.id   && c.to?.name)   members[c.to.id]   = { name: c.to.name,   icon: c.to.icon   || "" };
+      }
+    }
+    return members;
+  };
+
+  // ── Calculate balances ──
+  const calcBalances = (events, memberIds) => {
+    const bal = {};
+    for(const id of memberIds) bal[id] = START_BUDGET;
+    for(const ev of events){
+      if(ev.type === "transfer"){
+        for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+          const amt = c.amount || 0;
+          // from = VENDEDOR (gana), to = COMPRADOR (pierde)
+          if(c.from?.id != null && bal[c.from.id] !== undefined) bal[c.from.id] += amt;
+          if(c.to?.id   != null && bal[c.to.id]   !== undefined) bal[c.to.id]   -= amt;
+        }
+      } else if(ev.type === "market"){
+        for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+          const amt   = c.amount || 0;
+          const buyId = c.to?.id;  // to = COMPRADOR en mercado de pujas
+          if(buyId != null && bal[buyId] !== undefined) bal[buyId] -= amt;
+        }
+      }
+    }
+    return bal;
+  };
+
+  // ── MAIN LOAD ──
+  const loadAll = useCallback(async (forceRefresh = false) => {
+    setLoading(true);
+    setError(null);
+    try {
+      // ── Caché: mostrar datos guardados inmediatamente ──
+      const cached = forceRefresh ? { board: null, members: null } : cacheLoad();
+      const cachedBoard   = cached.board;
+      const cachedMembers = cached.members;
+      const sinceDate = cachedBoard ? (cachedBoard.lastEventDate || 0) : 0;
+
+      if(cachedBoard?.board?.length > 0){
+        setBoard(cachedBoard.board);
+        setCacheInfo({ savedAt: cachedBoard.savedAt, count: cachedBoard.board.length, newCount: null });
+      }
+      if(cachedMembers?.members) setMembers(cachedMembers.members);
+
+      // 1. Home (balance real) + League standings — siempre frescos
+      setLoadStep("Cuenta y liga...");
+      const [home, leagueData] = await Promise.all([
+        apiRef.current("/api/v2/home"),
+        apiRef.current(`/api/v2/league?include=all,-lastAccess&fields=*,standings,tournaments,group,settings(description)`).catch(()=>null),
+      ]);
+      const ownUser    = home?.user || {};
+      const ownRealBal = ownUser.balance ?? null;
+      setOwnBalance(ownRealBal);
+
+      const memberMap = {};
+      const standings = leagueData?.standings || [];
+      for(const s of (Array.isArray(standings) ? standings : [])){
+        memberMap[s.id] = {
+          name: s.name || `User ${s.id}`,
+          icon: s.icon || "",
+          teamValue:   s.teamValue ?? null,
+          realBalance: s.id === OWN_USER_ID ? ownRealBal : null,
+          position:    s.position ?? null,
+        };
+      }
+      if(!memberMap[OWN_USER_ID]){
+        memberMap[OWN_USER_ID] = { name: ownUser.name || "GabiPRO", icon: ownUser.icon || "i/u/11678731.png", realBalance: ownRealBal };
+      } else {
+        memberMap[OWN_USER_ID].realBalance = ownRealBal;
+      }
+      setMembers({...memberMap});
+
+      // 2. Board incremental: solo eventos nuevos desde sinceDate
+      setLoadStep(sinceDate > 0 ? `Actualizando board desde ${fmtDate(sinceDate)}...` : "Cargando board completo...");
+      const newEvents  = await fetchBoard(sinceDate);
+      const prevEvents = (cachedBoard?.board && !forceRefresh) ? cachedBoard.board : [];
+      // Merge + deduplicar por (date, type) + ordenar
+      const seen = new Set(prevEvents.map(e => `${e.date}_${e.type}`));
+      const fresh = newEvents.filter(e => !seen.has(`${e.date}_${e.type}`));
+      const allBoard = [...prevEvents, ...fresh].sort((a,b) => a.date - b.date);
+      setBoard(allBoard);
+
+      // Fallback member extraction del board
+      const boardMembers = extractMembersFromBoard(allBoard);
+      for(const [uid, m] of Object.entries(boardMembers)){
+        if(!memberMap[uid]) memberMap[uid] = { name: m.name, icon: m.icon, realBalance: null };
+      }
+      setMembers({...memberMap});
+
+      // 3. Player map
+      setLoadStep("Mapeando jugadores...");
+      const boardPlayers = extractPlayersFromBoard(allBoard);
+      const { map: apiPlayers, tried } = await fetchPlayerMap(apiRef.current, LEAGUE_ID);
+      setPlayerEndpoints(tried);
+      const merged = { ...boardPlayers, ...apiPlayers };
+      setPlayerMap(merged);
+
+      // 4. Market
+      setLoadStep("Mercado...");
+      try {
+        const mkt = await apiRef.current("/api/v2/market");
+        setMarketData(mkt);
+        for(const s of (mkt?.sales||[])){
+          const p = s.player;
+          if(p?.id && p?.name) merged[p.id] = { name:p.name, position:p.position, price:p.price };
+        }
+        setPlayerMap({...merged});
+      } catch(e){}
+
+      // 5. Balances estimados
+      const memberIds = Object.keys(memberMap).map(Number);
+      const estimated = calcBalances(allBoard, memberIds);
+      setBalances(estimated);
+
+      // 6. Guardar en caché
+      cacheSave(allBoard, memberMap);
+      setCacheInfo({ savedAt: Date.now(), count: allBoard.length, newCount: fresh.length });
+      setLastUpdated(new Date());
+      setLoadStep("");
+    } catch(e){
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadAll(); }, []);
+
+  // ─── DERIVED ────────────────────────────────────────────────────────────────
+  const sortedMembers = Object.entries(balances)
+    .map(([id,bal]) => ({
+      id: Number(id),
+      name: members[id]?.name || `User ${id}`,
+      icon: members[id]?.icon || "",
+      balance: bal,
+      isOwn: Number(id)===OWN_USER_ID,
+    }))
+    .sort((a,b) => b.balance - a.balance);
+
+  const boardDesc = [...board].reverse();
+
+  const filteredBoard = filterUser==="all" ? boardDesc : boardDesc.filter(ev =>
+    (Array.isArray(ev.content) ? ev.content : []).some(c =>
+      c.from?.id === Number(filterUser) || c.to?.id === Number(filterUser)
+    )
+  );
+
+  const pName = (c) => {
+    const pid  = typeof c.player==="object" ? c.player?.id  : c.player;
+    const pn   = typeof c.player==="object" ? c.player?.name : null;
+    return pn || playerMap[pid]?.name || `#${pid}`;
+  };
+
+  const pPos = (c) => {
+    const pid = typeof c.player==="object" ? c.player?.id : c.player;
+    return playerMap[pid]?.position || null;
+  };
+
+  const pTeam = (c) => {
+    const pid = typeof c.player==="object" ? c.player?.id : c.player;
+    return playerMap[pid]?.team || null;
+  };
+
+  const posLabel = (p) => ({1:"POR",2:"DEF",3:"MC",4:"DEL"}[p] || "?");
+  const posColor = (p) => ({1:"#38bdf8",2:"#4ade80",3:"#facc15",4:"#f97316"}[p] || "#94a3b8");
+
+  const isCors = error && (error.includes("fetch")||error.includes("NetworkError")||error.includes("Failed"));
+
+  // ─── RENDER ─────────────────────────────────────────────────────────────────
+  return (
+    <div style={S.app}>
+
+      {/* HEADER */}
+      <div style={S.header}>
+        <div>
+          <div style={S.logo}>Biwenger <span style={{color:"#f97316"}}>Intel</span></div>
+          <div style={S.meta}>CAFELITOS MUNDIAL · Liga {LEAGUE_ID} · {Object.keys(members).length} managers · {board.length} eventos</div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {cacheInfo && !loading && (
+            <span style={{...S.meta, fontSize:10, lineHeight:"1.4em"}}>
+              {cacheInfo.newCount > 0
+                ? `+${cacheInfo.newCount} nuevos · `
+                : ""}
+              {cacheInfo.count} eventos cacheados
+              {cacheInfo.savedAt
+                ? ` · guardado ${new Date(cacheInfo.savedAt).toLocaleTimeString("es-ES")}`
+                : ""}
+            </span>
+          )}
+          {lastUpdated && !loading && (
+            <span style={S.meta}>actualizado {lastUpdated.toLocaleTimeString("es-ES")}</span>
+          )}
+          <button style={S.btn} onClick={() => loadAll(false)} disabled={loading}>
+            {loading ? `⟳ ${loadStep||"Cargando..."}` : "↻ Actualizar"}
+          </button>
+          <button
+            style={{...S.btn, background:"#334155", fontSize:11}}
+            onClick={() => loadAll(true)}
+            disabled={loading}
+            title="Borrar caché y recargar todo desde la API"
+          >
+            ⟳ Recarga completa
+          </button>
+        </div>
+      </div>
+
+      {/* TOKEN BAR */}
+      <div style={S.tokenBar}>
+        <span style={{fontSize:11,color:"#475569",letterSpacing:1,textTransform:"uppercase"}}>🔑 Token</span>
+        <input
+          style={S.tokenInput}
+          value={token}
+          onChange={e=>setToken(e.target.value)}
+          placeholder="Bearer eyJ..."
+        />
+        <button
+          style={{...S.btn, fontSize:11, padding:"5px 12px", background:"#14532d", borderColor:"#15803d", whiteSpace:"nowrap"}}
+          title="Comprueba el mercado ahora y envía email si hay chollos"
+          onClick={() => {
+            fetch("/api-local/check-market", { method:"POST" })
+              .then(r => r.json())
+              .then(() => alert("Check de mercado iniciado — mira la consola del servidor"))
+              .catch(() => alert("Error: asegúrate de que el servidor está corriendo"));
+          }}
+        >
+          📧 Test alerta
+        </button>
+      </div>
+
+      {/* TABS */}
+      <div style={S.tabBar}>
+        {[["balances","💰 Saldos"],["board","📋 Tablón"],["market","🏪 Mercado"],["players","⚽ Jugadores"],["stats","📊 Stats"]].map(([k,l])=>(
+          <div key={k} style={{...S.tab, ...(tab===k?S.tabActive:{})}} onClick={()=>setTab(k)}>{l}</div>
+        ))}
+      </div>
+
+      <div style={S.content}>
+        {loading && <div style={S.loadBar}><div style={S.loadBarInner}/></div>}
+
+        {/* CORS ERROR */}
+        {error && (
+          <div style={S.errorBox}>
+            <div style={{fontWeight:600,color:"#f87171",marginBottom:8}}>⚠ {error}</div>
+            {isCors && (
+              <div style={S.corsBox}>
+                <strong style={{color:"#60a5fa"}}>🔒 Error CORS — Soluciones:</strong><br/><br/>
+                <strong>① Extensión (más fácil):</strong> Instala <code style={S.code}>CORS Everywhere</code> en Firefox o <code style={S.code}>Allow CORS</code> en Chrome. Actívala y recarga.<br/><br/>
+                <strong>② Servidor local:</strong> En la carpeta donde está este HTML:<br/>
+                <code style={{...S.code,display:"block",margin:"6px 0",padding:"8px"}}>python -m http.server 8080</code>
+                Luego abre <code style={S.code}>http://localhost:8080/biwenger-intel.html</code><br/><br/>
+                <strong>③ Consola de Biwenger:</strong> Abre biwenger.as.com → F12 → Consola. El token ya está embebido.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB SALDOS ── */}
+        {tab==="balances" && <>
+          <div style={S.statsGrid}>
+            {[
+              ["Managers en liga",    sortedMembers.length,                              "#94a3b8"],
+              ["Tu saldo real (API)", ownBalance!=null ? fmt(ownBalance) : "—",          "#38bdf8"],
+              ["Tu saldo estimado",   sortedMembers.find(m=>m.isOwn) ? fmt(sortedMembers.find(m=>m.isOwn).balance) : "—", "#60a5fa"],
+              ["Δ Real vs Estimado",  (() => {
+                const own = sortedMembers.find(m=>m.isOwn);
+                if(!own || ownBalance==null) return "—";
+                const d = ownBalance - own.balance;
+                return `${d>=0?"+":""}${fmt(d)}`;
+              })(), (() => {
+                const own = sortedMembers.find(m=>m.isOwn);
+                if(!own || ownBalance==null) return "#475569";
+                return Math.abs(ownBalance - own.balance) < 100_000 ? "#4ade80" : "#f87171";
+              })()],
+              ["Saldo más alto rival", sortedMembers.filter(m=>!m.isOwn).length>0 ? fmt(Math.max(...sortedMembers.filter(m=>!m.isOwn).map(m=>m.balance))) : "—", "#4ade80"],
+              ["Saldo más bajo rival", sortedMembers.filter(m=>!m.isOwn).length>0 ? fmt(Math.min(...sortedMembers.filter(m=>!m.isOwn).map(m=>m.balance))) : "—", "#f87171"],
+            ].map(([l,v,c])=>(
+              <div key={l} style={S.statCard}>
+                <div style={S.statLabel}>{l}</div>
+                <div style={{...S.statValue,color:c}}>{v}</div>
+              </div>
+            ))}
+          </div>
+          <div style={S.sectionTitle}>Clasificación por saldo estimado · {sortedMembers.length} managers</div>
+          <div style={S.card}>
+            <table style={S.table}>
+              <thead>
+                <tr>{["#","Manager","Saldo Est.","Saldo Real","Δ Real/Est","Estado","Δ vs 20M","Gastado","Ingresado"].map(h=>(
+                  <th key={h} style={S.th}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {sortedMembers.length===0 && !loading && (
+                  <tr><td colSpan={9} style={{textAlign:"center",color:"#475569",padding:40}}>
+                    Sin datos — comprueba el token y la conexión
+                  </td></tr>
+                )}
+                {sortedMembers.map((m,i) => {
+                  let spent=0, earned=0;
+                  for(const ev of board){
+                    if(ev.type==="transfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                      if(c.to?.id  ===m.id) spent  += c.amount||0;  // to=comprador
+                      if(c.from?.id===m.id) earned += c.amount||0;  // from=vendedor
+                    }
+                    if(ev.type==="market") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                      if(c.to?.id===m.id) spent += c.amount||0;
+                    }
+                  }
+                  const delta      = m.balance - START_BUDGET;
+                  const bc         = balClass(m.balance);
+                  const realMBal   = m.isOwn ? ownBalance : (members[m.id]?.realBalance ?? null);
+                  const diffReal   = realMBal != null ? realMBal - m.balance : null;
+                  const diffColor  = diffReal == null ? "#475569"
+                                   : Math.abs(diffReal) < 100_000 ? "#4ade80"
+                                   : Math.abs(diffReal) < 500_000 ? "#facc15" : "#f87171";
+                  const isExpanded = selectedMgr === m.id;
+
+                  // Trazabilidad: todas las operaciones de este manager
+                  const txs = !isExpanded ? [] : board.flatMap(ev => {
+                    if(ev.type !== "transfer" && ev.type !== "market") return [];
+                    return (Array.isArray(ev.content) ? ev.content : [])
+                      .filter(c => c.from?.id===m.id || c.to?.id===m.id)
+                      .map(c => {
+                        // from=VENDEDOR, to=COMPRADOR
+                        const isBuy  = ev.type==="market" ? true : c.to?.id===m.id;
+                        const pid    = typeof c.player==="object" ? c.player?.id : c.player;
+                        const pname  = typeof c.player==="object" ? c.player?.name : (playerMap[pid]?.name || `#${pid}`);
+                        const pteam  = playerMap[pid]?.team || null;
+                        const contra = isBuy
+                          ? (ev.type==="market" ? "Mercado libre" : (c.from?.name || "Mercado libre"))
+                          : (c.to?.name || "Mercado libre");
+                        return { date: ev.date, pname, pteam, amount: c.amount||0, isBuy, contra, txType: ev.type };
+                      });
+                  }).sort((a,b)=>b.date-a.date);
+
+                  // Balance running: procesar en orden cronológico (asc), mostrar desc
+                  let runBal = START_BUDGET;
+                  const txsWithBal = [...txs].reverse().map(tx => {
+                    runBal += tx.isBuy ? -tx.amount : tx.amount;
+                    return {...tx, balAfter: runBal};
+                  }); // txsWithBal[last].balAfter ≈ m.balance
+
+                  return (
+                    <React.Fragment key={m.id}>
+                      <tr
+                        style={{...(m.isOwn?S.ownRow:{}), cursor:"pointer", userSelect:"none"}}
+                        onClick={()=>setSelectedMgr(isExpanded ? null : m.id)}
+                      >
+                        <td style={{...S.td,...S.rankCell,color:i<3?"#f97316":"#475569"}}>{i+1}</td>
+                        <td style={S.td}>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <div style={{...S.avatar,background:isExpanded?"#1d4ed8":"#1e3a5f"}}>{initials(m.name)}</div>
+                            <span>{m.name}</span>
+                            {m.isOwn && <span style={S.ownBadge}>TÚ</span>}
+                            <span style={{fontSize:10,color:"#475569"}}>{isExpanded?"▲":"▼"}</span>
+                          </div>
+                        </td>
+                        <td style={{...S.td,...S.moneyCell,color:{rich:"#4ade80",mid:"#facc15",tight:"#f87171"}[bc]}}>
+                          {fmt(m.balance)}
+                        </td>
+                        <td style={{...S.td,...S.moneyCell,color:"#38bdf8"}}>
+                          {realMBal != null ? fmt(realMBal) : <span style={{color:"#1e3a5f"}}>—</span>}
+                        </td>
+                        <td style={{...S.td,...S.moneyCell,color:diffColor}}>
+                          {diffReal == null ? <span style={{color:"#1e3a5f"}}>—</span>
+                            : `${diffReal>=0?"+":""}${fmt(diffReal)}`}
+                        </td>
+                        <td style={S.td}>
+                          <span style={{...S.badge,...S.badgeColors[bc]}}>{
+                            bc==="rich"?"💰 Rico":bc==="mid"?"⚖️ Medio":"🔴 Apurado"
+                          }</span>
+                        </td>
+                        <td style={{...S.td,...S.moneyCell,color:delta>=0?"#4ade80":"#f87171"}}>
+                          {delta>=0?"+":""}{fmt(delta)}
+                        </td>
+                        <td style={{...S.td,...S.moneyCell,color:"#f87171"}}>-{fmt(spent)}</td>
+                        <td style={{...S.td,...S.moneyCell,color:"#4ade80"}}>+{fmt(earned)}</td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={9} style={{padding:0,background:"#060a10",borderBottom:"2px solid #1d4ed8"}}>
+                            <div style={{padding:"12px 20px"}}>
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"#60a5fa"}}>
+                                  Trazabilidad de {m.name} · {txs.length} operaciones
+                                </span>
+                                <span style={{fontSize:12,color:"#475569"}}>
+                                  20.00M inicial → <span style={{color:{rich:"#4ade80",mid:"#facc15",tight:"#f87171"}[bc],fontWeight:700}}>{fmt(m.balance)}</span> estimado
+                                  {realMBal!=null && <> · <span style={{color:"#38bdf8",fontWeight:700}}>{fmt(realMBal)}</span> real</>}
+                                </span>
+                              </div>
+                              {txs.length===0 ? (
+                                <div style={{color:"#475569",fontSize:13,padding:"8px 0"}}>Sin operaciones registradas en el tablón</div>
+                              ) : (
+                                <table style={{...S.table,fontSize:12}}>
+                                  <thead>
+                                    <tr>
+                                      {["Fecha","Jugador","Tipo","Importe","Contrapartida","Saldo tras op."].map(h=>(
+                                        <th key={h} style={{...S.th,fontSize:10,padding:"6px 10px"}}>{h}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {[...txsWithBal].reverse().map((tx,ti)=>(
+                                      <tr key={ti} style={{borderBottom:"1px solid #0a1220"}}>
+                                        <td style={{...S.td,padding:"6px 10px",color:"#475569",fontSize:11}}>{fmtDate(tx.date)}</td>
+                                        <td style={{...S.td,padding:"6px 10px"}}>
+                                          {tx.pname}
+                                          {tx.pteam && <span style={{marginLeft:5,fontSize:10,color:"#64748b"}}>{tx.pteam}</span>}
+                                        </td>
+                                        <td style={{...S.td,padding:"6px 10px"}}>
+                                          <span style={{padding:"2px 8px",borderRadius:3,fontSize:10,fontWeight:700,
+                                            background:tx.isBuy?"#450a0a":"#064e3b",
+                                            color:tx.isBuy?"#f87171":"#4ade80"}}>
+                                            {tx.isBuy ? "COMPRA" : "VENTA"}
+                                          </span>
+                                        </td>
+                                        <td style={{...S.td,padding:"6px 10px",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,
+                                          color:tx.isBuy?"#f87171":"#4ade80"}}>
+                                          {tx.isBuy?"-":"+"}{fmtK(tx.amount)}
+                                        </td>
+                                        <td style={{...S.td,padding:"6px 10px",color:"#94a3b8"}}>{tx.contra}</td>
+                                        <td style={{...S.td,padding:"6px 10px",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,color:"#e2e8f0"}}>
+                                          {fmt(tx.balAfter)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>}
+
+        {/* ── TAB TABLÓN ── */}
+        {tab==="board" && <>
+          <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:20}}>
+            <div style={S.sectionTitle} className="notitle">Tablón de eventos</div>
+            <select style={S.select} value={filterUser} onChange={e=>setFilterUser(e.target.value)}>
+              <option value="all">Todos los managers</option>
+              {sortedMembers.map(m=>(
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+          </div>
+          <div style={S.card}>
+            {filteredBoard.length===0 && !loading && (
+              <div style={{padding:32,textAlign:"center",color:"#475569"}}>Sin eventos</div>
+            )}
+            {filteredBoard.map((ev,idx)=>(
+              <div key={idx} style={S.boardEvent}>
+                <div style={S.eventHeader}>
+                  <span style={{...S.evType,...(ev.type==="transfer"?S.evTransfer:ev.type==="market"?S.evMarket:S.evMove)}}>
+                    {ev.type==="transfer"?"🔄 Traspaso":ev.type==="market"?"🏪 Mercado":"👟 Movimientos"}
+                  </span>
+                  <span style={{fontSize:12,color:"#475569"}}>{fmtDate(ev.date)}</span>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {(Array.isArray(ev.content) ? ev.content : []).slice(0,6).map((c,ci)=>{
+                    const name = pName(c);
+                    const pos  = pPos(c);
+                    const team = pTeam(c);
+                    if(ev.type==="transfer") return (
+                      <div key={ci} style={S.eventItem}>
+                        {pos && <span style={{...S.posTag,background:posColor(pos)+"22",color:posColor(pos),border:`1px solid ${posColor(pos)}44`}}>{posLabel(pos)}</span>}
+                        <span style={S.playerTag}>⚽ {name}{team && <span style={{marginLeft:4,fontSize:10,color:"#94a3b8",fontWeight:400}}>{team}</span>}</span>
+                        <span style={{...S.money,color:"#f87171"}}>-{fmt(c.amount)}</span>
+                        <span style={{color:"#475569",fontSize:11}}>←</span>
+                        <span style={{fontSize:13,color:"#94a3b8"}}>{c.from?.name||"Mercado"}</span>
+                        {c.to && <><span style={{color:"#475569",fontSize:11}}>→</span><span style={{fontSize:13,color:"#94a3b8"}}>{c.to.name}</span></>}
+                        {c.type==="clause" && <span style={{fontSize:10,color:"#64748b"}}>(cláusula)</span>}
+                      </div>
+                    );
+                    if(ev.type==="market") return (
+                      <div key={ci} style={S.eventItem}>
+                        {pos && <span style={{...S.posTag,background:posColor(pos)+"22",color:posColor(pos),border:`1px solid ${posColor(pos)}44`}}>{posLabel(pos)}</span>}
+                        <span style={S.playerTag}>⚽ {name}{team && <span style={{marginLeft:4,fontSize:10,color:"#94a3b8",fontWeight:400}}>{team}</span>}</span>
+                        <span style={{...S.money,color:"#f87171"}}>-{fmt(c.amount)}</span>
+                        <span style={{color:"#475569",fontSize:11}}>→</span>
+                        <span style={{fontSize:13,color:"#94a3b8"}}>{c.to?.name||members[c.to?.id]?.name||`User ${c.to?.id}`}</span>
+                      </div>
+                    );
+                    return (
+                      <div key={ci} style={{...S.eventItem,color:"#64748b",fontSize:12}}>
+                        {c.type==="join"?"➕":"➖"} Jugador #{typeof c.player==="object"?c.player?.id:c.player}
+                      </div>
+                    );
+                  })}
+                  {(Array.isArray(ev.content) ? ev.content : []).length>6 && <div style={{fontSize:12,color:"#475569"}}>+{(Array.isArray(ev.content)?ev.content:[]).length-6} más...</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>}
+
+        {/* ── TAB MERCADO ── */}
+        {tab==="market" && <>
+          <div style={S.sectionTitle}>Jugadores en venta ahora</div>
+          {!marketData && !loading && <div style={{color:"#64748b",padding:20}}>Sin datos de mercado</div>}
+          {marketData && (
+            <>
+              <div style={S.statsGrid}>
+                <div style={S.statCard}>
+                  <div style={S.statLabel}>Jugadores en venta</div>
+                  <div style={S.statValue}>{(marketData.sales||[]).length}</div>
+                </div>
+                <div style={S.statCard}>
+                  <div style={S.statLabel}>Tu saldo</div>
+                  <div style={{...S.statValue,color:"#38bdf8"}}>{fmt(ownBalance)}</div>
+                </div>
+              </div>
+              <div style={S.card}>
+                <table style={S.table}>
+                  <thead>
+                    <tr>{["Jugador","Pos","Precio venta","Precio mercado","Vendedor","Expira","¿Comprable?"].map(h=>(
+                      <th key={h} style={S.th}>{h}</th>
+                    ))}</tr>
+                  </thead>
+                  <tbody>
+                    {(marketData.sales||[]).map((s,i)=>{
+                      const pid       = s.player?.id || s.player;
+                      const pn        = s.player?.name || playerMap[pid]?.name || `#${pid}`;
+                      const pos       = s.player?.position || playerMap[pid]?.position;
+                      const team      = playerMap[pid]?.team || null;
+                      const mktPrice  = s.player?.price || playerMap[pid]?.price;
+                      const canBuy    = ownBalance != null && s.price <= ownBalance;
+                      const expires   = s.until ? fmtDate(s.until) : "—";
+                      const seller    = s.user ? (members[s.user]?.name || `User ${s.user}`) : "Mercado";
+                      return (
+                        <tr key={i}>
+                          <td style={S.td}>
+                            {pos && <span style={{...S.posTag,background:posColor(pos)+"22",color:posColor(pos),border:`1px solid ${posColor(pos)}44`,marginRight:6}}>{posLabel(pos)}</span>}
+                            {pn}
+                            {team && <span style={{marginLeft:5,fontSize:10,color:"#64748b"}}>{team}</span>}
+                          </td>
+                          <td style={{...S.td,color:"#94a3b8"}}>{pos?posLabel(pos):"—"}</td>
+                          <td style={{...S.td,...S.moneyCell,color:"#facc15"}}>{fmt(s.price)}</td>
+                          <td style={{...S.td,...S.moneyCell,color:"#64748b"}}>{mktPrice?fmt(mktPrice):"—"}</td>
+                          <td style={{...S.td,fontSize:13,color:"#94a3b8"}}>{seller}</td>
+                          <td style={{...S.td,fontSize:12,color:"#64748b"}}>{expires}</td>
+                          <td style={S.td}>
+                            <span style={{padding:"3px 10px",borderRadius:4,fontSize:11,fontWeight:700,
+                              background:canBuy?"#064e3b":"#450a0a",
+                              color:canBuy?"#4ade80":"#f87171"}}>
+                              {canBuy?"✓ Sí":"✗ No"}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>}
+
+        {/* ── TAB JUGADORES ── */}
+        {tab==="players" && <>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <div style={S.sectionTitle}>{Object.keys(playerMap).length} jugadores mapeados</div>
+          </div>
+          <div style={{...S.corsBox,marginBottom:20}}>
+            <strong style={{color:"#60a5fa"}}>🔍 Estado del mapeo de jugadores</strong><br/><br/>
+            <strong>Fuentes probadas:</strong><br/>
+            {playerEndpoints.map((ep,i)=>(
+              <div key={i} style={{fontSize:12,marginTop:4}}>
+                <code style={S.code}>{ep}</code>
+              </div>
+            ))}<br/>
+            <strong>Resultado:</strong> {Object.keys(playerMap).length} jugadores con nombre.<br/>
+            <strong>IDs sin nombre:</strong> Se verán como <code style={S.code}>#ID</code> en el tablón.<br/><br/>
+            <strong>💡 Siguiente paso:</strong> Con los IDs del tablón podemos buscar en SofaScore/FBref.
+            Endpoint a investigar: <code style={S.code}>GET /api/v2/players/[ID]</code> (ejecutar desde la consola de biwenger.as.com)
+          </div>
+          <div style={S.card}>
+            <table style={S.table}>
+              <thead>
+                <tr>{["ID","Nombre","Posición","Precio mercado"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {Object.entries(playerMap).sort((a,b)=>(a[1].name||"").localeCompare(b[1].name||"")).map(([id,p])=>(
+                  <tr key={id}>
+                    <td style={{...S.td,color:"#475569",fontFamily:"monospace",fontSize:12}}>{id}</td>
+                    <td style={S.td}>{p.name}</td>
+                    <td style={S.td}>
+                      {p.position && <span style={{...S.posTag,background:posColor(p.position)+"22",color:posColor(p.position),border:`1px solid ${posColor(p.position)}44`}}>{posLabel(p.position)}</span>}
+                    </td>
+                    <td style={{...S.td,...S.moneyCell,color:"#94a3b8"}}>{p.price?fmt(p.price):"—"}</td>
+                  </tr>
+                ))}
+                {Object.keys(playerMap).length===0 && (
+                  <tr><td colSpan={4} style={{textAlign:"center",color:"#475569",padding:32}}>
+                    Sin jugadores mapeados aún — los IDs del tablón sin nombre se mostrarán cuando actualices
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>}
+
+        {/* ── TAB STATS ── */}
+        {tab==="stats" && <>
+          <div style={S.sectionTitle}>Resumen de actividad de mercado</div>
+          <div style={S.statsGrid}>
+            {[
+              ["🔄 Traspasos",         board.filter(e=>e.type==="transfer").length],
+              ["🏪 Compras mercado",   board.filter(e=>e.type==="market").length],
+              ["👟 Mov. plantilla",    board.filter(e=>e.type==="playerMovements").length],
+              ["⚽ Jugadores únicos",  Object.keys(playerMap).length],
+              ["💸 Total transacciones", (() => {
+                let t=0;
+                for(const ev of board){
+                  if(ev.type==="transfer"||ev.type==="market")
+                    for(const c of (Array.isArray(ev.content) ? ev.content : [])) t+=c.amount||0;
+                }
+                return fmt(t);
+              })()],
+            ].map(([l,v])=>(
+              <div key={l} style={S.statCard}>
+                <div style={S.statLabel}>{l}</div>
+                <div style={S.statValue}>{v}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={S.sectionTitle}>Ranking actividad en mercado</div>
+          <div style={S.card}>
+            <table style={S.table}>
+              <thead>
+                <tr>{["Manager","Compras realizadas","Total gastado","Total ingresado","Saldo neto"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {sortedMembers.map(m=>{
+                  let spent=0, earned=0, ops=0;
+                  for(const ev of board){
+                    if(ev.type==="transfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                      if(c.to?.id  ===m.id){spent +=c.amount||0;ops++;}  // to=comprador
+                      if(c.from?.id===m.id) earned+=c.amount||0;          // from=vendedor
+                    }
+                    if(ev.type==="market") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                      if(c.to?.id===m.id){spent+=c.amount||0;ops++;}
+                    }
+                  }
+                  const net = earned - spent;
+                  return (
+                    <tr key={m.id} style={m.isOwn?S.ownRow:{}}>
+                      <td style={S.td}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <div style={S.avatar}>{initials(m.name)}</div>
+                          {m.name}
+                          {m.isOwn && <span style={S.ownBadge}>TÚ</span>}
+                        </div>
+                      </td>
+                      <td style={{...S.td,textAlign:"center"}}>{ops}</td>
+                      <td style={{...S.td,...S.moneyCell,color:"#f87171"}}>-{fmt(spent)}</td>
+                      <td style={{...S.td,...S.moneyCell,color:"#4ade80"}}>+{fmt(earned)}</td>
+                      <td style={{...S.td,...S.moneyCell,color:net>=0?"#4ade80":"#f87171"}}>{net>=0?"+":""}{fmt(net)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ─── STYLES ──────────────────────────────────────────────────────────────────
+const S = {
+  app:        { fontFamily:"'Barlow',sans-serif", background:"#080c12", color:"#e2e8f0", minHeight:"100vh" },
+  header:     { background:"linear-gradient(135deg,#0d1117 0%,#161d2a 100%)", borderBottom:"1px solid #1e3a5f", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between" },
+  logo:       { fontFamily:"'Barlow Condensed',sans-serif", fontSize:22, fontWeight:800, letterSpacing:2, color:"#38bdf8", textTransform:"uppercase" },
+  meta:       { fontSize:12, color:"#475569", marginTop:2 },
+  btn:        { background:"#1e3a5f", color:"#38bdf8", border:"1px solid #1d4ed8", padding:"8px 18px", borderRadius:6, cursor:"pointer", fontFamily:"'Barlow',sans-serif", fontSize:13, fontWeight:500 },
+  tokenBar:   { background:"#0a0e14", borderBottom:"1px solid #1a2535", padding:"8px 24px", display:"flex", alignItems:"center", gap:12 },
+  tokenInput: { flex:1, background:"#0d1117", border:"1px solid #1e3a5f", borderRadius:6, padding:"6px 12px", color:"#94a3b8", fontSize:12, fontFamily:"monospace", outline:"none" },
+  tabBar:     { display:"flex", gap:2, padding:"14px 24px 0", background:"#0d1117", borderBottom:"1px solid #1e3a5f" },
+  tab:        { fontFamily:"'Barlow Condensed',sans-serif", fontSize:13, letterSpacing:1, textTransform:"uppercase", padding:"10px 18px", cursor:"pointer", color:"#64748b", borderBottom:"3px solid transparent", fontWeight:700 },
+  tabActive:  { color:"#38bdf8", borderBottomColor:"#38bdf8" },
+  content:    { padding:24 },
+  loadBar:    { height:3, background:"#1e3a5f", borderRadius:3, overflow:"hidden", marginBottom:20 },
+  loadBarInner: { height:"100%", width:"40%", background:"linear-gradient(90deg,#1d4ed8,#38bdf8)", animation:"slide 1s ease-in-out infinite", borderRadius:3 },
+  errorBox:   { background:"#1a0f0f", border:"1px solid #7f1d1d", borderRadius:8, padding:16, marginBottom:16 },
+  corsBox:    { background:"#0f1f2e", border:"1px solid #1d4ed8", borderRadius:8, padding:16, color:"#93c5fd", fontSize:13, lineHeight:1.8, marginBottom:16 },
+  code:       { background:"#1e3a5f", padding:"2px 6px", borderRadius:4, fontFamily:"monospace", fontSize:11, color:"#93c5fd" },
+  sectionTitle:{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:3, textTransform:"uppercase", color:"#475569", marginBottom:16 },
+  statsGrid:  { display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:14, marginBottom:24 },
+  statCard:   { background:"#0d1117", border:"1px solid #1e2d40", borderRadius:10, padding:"18px 20px" },
+  statLabel:  { fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:2, textTransform:"uppercase", color:"#475569", marginBottom:8 },
+  statValue:  { fontFamily:"'Barlow Condensed',sans-serif", fontSize:28, fontWeight:700, color:"#e2e8f0" },
+  card:       { background:"#0d1117", border:"1px solid #1e2d40", borderRadius:10, overflow:"hidden", marginBottom:24 },
+  table:      { width:"100%", borderCollapse:"collapse" },
+  th:         { fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:2, textTransform:"uppercase", color:"#475569", padding:"12px 14px", textAlign:"left", borderBottom:"1px solid #1e2d40", background:"#080c12", whiteSpace:"nowrap" },
+  td:         { padding:"11px 14px", borderBottom:"1px solid #0d1a28", fontSize:14, verticalAlign:"middle" },
+  rankCell:   { fontFamily:"'Barlow Condensed',sans-serif", fontSize:17, fontWeight:700, width:32, textAlign:"center" },
+  moneyCell:  { fontFamily:"'Barlow Condensed',sans-serif", fontSize:16, fontWeight:700 },
+  ownRow:     { background:"#0a1929" },
+  avatar:     { width:28, height:28, borderRadius:"50%", background:"#1e3a5f", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, color:"#38bdf8", fontWeight:700, flexShrink:0 },
+  ownBadge:   { background:"#0ea5e9", color:"#fff", fontSize:9, letterSpacing:1, padding:"2px 6px", borderRadius:3, fontWeight:700 },
+  badge:      { display:"inline-block", fontSize:11, padding:"3px 10px", borderRadius:12, fontWeight:600 },
+  badgeColors:{ rich:{background:"#064e3b",color:"#4ade80"}, mid:{background:"#3f2b00",color:"#facc15"}, tight:{background:"#450a0a",color:"#f87171"} },
+  boardEvent: { borderBottom:"1px solid #0d1a28", padding:"14px 16px" },
+  eventHeader:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 },
+  evType:     { fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:2, textTransform:"uppercase", padding:"3px 10px", borderRadius:4, fontWeight:700 },
+  evTransfer: { background:"#1e3a5f", color:"#60a5fa" },
+  evMarket:   { background:"#2a1f00", color:"#fb923c" },
+  evMove:     { background:"#1a0f2e", color:"#a78bfa" },
+  eventItem:  { display:"flex", alignItems:"center", gap:8, fontSize:13 },
+  playerTag:  { background:"#111827", border:"1px solid #1e3a5f", borderRadius:4, padding:"2px 8px", color:"#e2e8f0", fontSize:12 },
+  posTag:     { fontSize:10, fontWeight:700, padding:"2px 6px", borderRadius:3, letterSpacing:0.5 },
+  money:      { fontFamily:"'Barlow Condensed',sans-serif", fontSize:14, fontWeight:700 },
+  select:     { background:"#0d1117", border:"1px solid #1e3a5f", borderRadius:6, padding:"6px 12px", color:"#94a3b8", fontSize:13, outline:"none" },
+};
+
+// Add keyframes
+const style = document.createElement("style");
+style.textContent = `@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}`;
+document.head.appendChild(style);
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

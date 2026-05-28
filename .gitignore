@@ -1,0 +1,17 @@
+node_modules/
+
+# Secretos — nunca al repo
+.env
+.token
+
+# Claude Code — sesiones y memoria local
+.claude/projects/
+.claude/settings.json
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
