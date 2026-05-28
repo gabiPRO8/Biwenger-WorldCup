@@ -2,353 +2,442 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Biwenger Intel — Arquitectura</title>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: #0d1117;
-      color: #e2e8f0;
-      font-family: 'Segoe UI', sans-serif;
-      padding: 32px;
-      min-height: 100vh;
-    }
-    h1  { color: #f97316; font-size: 22px; margin-bottom: 4px; }
-    sub { color: #64748b; font-size: 13px; display: block; margin-bottom: 28px; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#f8fafc;font-family:'Segoe UI',sans-serif;color:#1e293b;padding:20px;min-height:100vh}
+    h1 {color:#f97316;font-size:20px;margin-bottom:2px;font-weight:800;letter-spacing:1px}
+    .sub{color:#94a3b8;font-size:12px;margin-bottom:20px}
 
-    .tabs { display: flex; gap: 4px; margin-bottom: 0; border-bottom: 1px solid #1e3a5f; }
-    .tab  {
-      padding: 9px 22px; cursor: pointer;
-      font-size: 12px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
-      border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0;
-      background: transparent; color: #475569;
-    }
-    .tab:hover  { color: #94a3b8; }
-    .tab.active { background: #0f172a; color: #38bdf8; border-color: #1e3a5f; }
+    .tabs{display:flex;gap:0;border-bottom:2px solid #e2e8f0;overflow-x:auto;scrollbar-width:none}
+    .tab{padding:10px 16px;cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.5px;
+         text-transform:uppercase;color:#94a3b8;border-bottom:3px solid transparent;
+         white-space:nowrap;transition:color .15s}
+    .tab:hover{color:#64748b}
+    .tab.active{color:#f97316;border-bottom-color:#f97316}
 
-    .panel { display: none; }
-    .panel.active { display: block; }
+    .panel{display:none}
+    .panel.active{display:block}
 
-    .mermaid-wrap {
-      background: #0f172a;
-      border: 1px solid #1e3a5f;
-      border-top: none;
-      border-radius: 0 0 10px 10px;
-      padding: 36px 24px 28px;
-      overflow-x: auto;
-    }
-    .mermaid { display: flex; justify-content: center; }
+    .wrap{background:#fff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;
+          padding:24px 16px;overflow-x:auto}
+    .mermaid{display:flex;justify-content:center}
 
-    .legend {
-      margin-top: 20px;
-      display: flex; flex-wrap: wrap; gap: 18px;
-    }
-    .li { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #94a3b8; }
-    .dot { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+    .legend{margin-top:16px;display:flex;flex-wrap:wrap;gap:12px}
+    .li{display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b}
+    .dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
 
-    .files-grid {
-      margin-top: 20px;
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 10px;
-    }
-    .file-card {
-      background: #0f172a;
-      border: 1px solid #1e3a5f;
-      border-radius: 8px;
-      padding: 12px 14px;
-    }
-    .file-name { font-size: 13px; font-weight: 700; color: #38bdf8; font-family: monospace; }
-    .file-desc { font-size: 11px; color: #64748b; margin-top: 4px; line-height: 1.5; }
-    .file-tag  {
-      display: inline-block; margin-top: 6px;
-      padding: 1px 7px; border-radius: 3px; font-size: 10px; font-weight: 700;
-    }
+    /* File inventory grid */
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:4px}
+    .fcard{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;border-left:3px solid #e2e8f0}
+    .fname{font-size:13px;font-weight:700;color:#1e293b;font-family:monospace}
+    .fdesc{font-size:11px;color:#64748b;margin-top:4px;line-height:1.5}
+    .ftag{display:inline-block;margin-top:6px;padding:1px 7px;border-radius:3px;font-size:10px;font-weight:700}
   </style>
 </head>
 <body>
 
-<h1>Biwenger Intel — Arquitectura</h1>
-<sub>CAFELITOS MUNDIAL · Liga 2057487 · ADDEREIN · 27 mayo 2026</sub>
+<h1>BIWENGER INTEL · ARQUITECTURA</h1>
+<div class="sub">CAFELITOS MUNDIAL · Liga 2057487 · gabipro8.github.io/Biwenger-WorldCup · biwenger-worldcup.onrender.com</div>
 
 <div class="tabs">
-  <div class="tab active" onclick="showTab('overview', this)">Sistema completo</div>
-  <div class="tab"        onclick="showTab('alert',    this)">Flujo de alertas</div>
-  <div class="tab"        onclick="showTab('data',     this)">Flujo de datos UI</div>
-  <div class="tab"        onclick="showTab('files',    this)">Ficheros del proyecto</div>
+  <div class="tab active" onclick="show('infra',this)">🖥 Infraestructura</div>
+  <div class="tab"        onclick="show('http', this)">🌐 Peticiones HTTP</div>
+  <div class="tab"        onclick="show('deploy',this)">🚀 Deploy Pipeline</div>
+  <div class="tab"        onclick="show('alerts',this)">📧 Sistema de alertas</div>
+  <div class="tab"        onclick="show('files', this)">📁 Ficheros</div>
 </div>
 
-<!-- ══════════════════════════════════════════════════════════════════════════
-     TAB 1 — SISTEMA COMPLETO
-════════════════════════════════════════════════════════════════════════════ -->
-<div id="overview" class="panel active">
-  <div class="mermaid-wrap">
-    <div class="mermaid">
+<!-- ═══════════════════════════ TAB 1 — INFRAESTRUCTURA ══════════════════════════ -->
+<div id="infra" class="panel active">
+<div class="wrap">
+<div class="mermaid">
 flowchart TD
-    subgraph CFG["⚙️  Configuración local"]
-        ENV[".env\nSMTP_USER · SMTP_PASS\nALERT_EMAIL · umbrales"]
-        TOK[".token\nJWT Bearer persistido\nen disco"]
+
+  subgraph DEV["💻  Máquina local  (Desarrollo)"]
+    direction TB
+    subgraph DEVFILES["Ficheros"]
+      F1["server.js"]
+      F2["biwenger-intel-proxy.html"]
+      F3[".env  ·  credenciales SMTP"]
+      F4[".token  ·  JWT en disco"]
+      F5["package.json  ·  node_modules/"]
     end
-
-    subgraph BROWSER["🌐  Browser  ·  localhost:8080"]
-        HTML["biwenger-intel-proxy.html\n─────────────────────────\nReact 18 + Babel CDN\n\nloadAll()  fetchBoard()\nfetchPlayerMap()  calcBalances()\nlocalStorage cache"]
+    subgraph DEVRUN["En ejecución"]
+      NODE_L["Node.js v18+\nnpm start → node server.js\npuerto 8080"]
+      BR_L["Chrome / Edge\nlocalhost:8080"]
     end
+  end
 
-    subgraph SERVER["🖥️  Node.js  ·  server.js"]
-        direction TB
-        MW["Middleware CORS\n(todos los orígenes)"]
-        P1["Proxy  /api/*\nbiwenger.as.com\ninyecta Bearer + headers"]
-        P2["Proxy  /cfapi/*\ncf.biwenger.com\nsin autenticación"]
-        LAPI["API local\nPOST /api-local/token\nPOST /api-local/check-market\nGET  /api-local/alert-status"]
-        STATIC["Sirve ficheros\nestáticos"]
-        CRON["checkMarketAlerts()\nsetInterval 5 min\n+ 30 s al arrancar"]
-        MAILER["nodemailer\nsendAlertEmail()\nsendSpanishAlertEmail()"]
-        MW --> P1 & P2 & LAPI & STATIC
-        LAPI --> CRON
-        CRON --> MAILER
+  subgraph GH["🐙  GitHub  (gabiPRO8/Biwenger-WorldCup)"]
+    REPO["Repositorio\nbranch: main"]
+    subgraph PAGES["📄  GitHub Pages"]
+      PAGES_URL["gabipro8.github.io/\nBiwenger-WorldCup/"]
+      PAGES_FILES["Sirve HTML estático\nbiwenger-intel-proxy.html\nindex.html  architecture.html"]
     end
+  end
 
-    subgraph EXT["☁️  APIs Biwenger"]
-        AS["biwenger.as.com\n/api/v2/account\n/api/v2/market\n/api/v2/league/:id/board\n/api/v2/league (standings)"]
-        CF["cf.biwenger.com\n/api/v2/competitions/\nworld-cup/data\n(JSONP · ~1300 jugadores)"]
+  subgraph RENDER["☁️  Render.com  (Producción)"]
+    direction TB
+    RENDER_URL["biwenger-worldcup.onrender.com"]
+    subgraph RENDER_APP["Node.js Web Service"]
+      EXPRESS["Express\nserver.js"]
+      P_API["Proxy  /api/*\n→ biwenger.as.com"]
+      P_CF["Proxy  /cfapi/*\n→ cf.biwenger.com"]
+      L_API["API local\n/api-local/token\n/api-local/check-market"]
+      CRON_R["setInterval 5 min\ncheckMarketAlerts()"]
+      MAILER_R["nodemailer\nsendAlertEmail()\nsendSpanishAlertEmail()"]
     end
-
-    subgraph EMAIL["📧  Email"]
-        SMTP["Gmail SMTP\nsmtp.gmail.com : 587\nApp Password"]
-        BOX["gabriel.iniesta@\nestudiants.upc.edu"]
+    subgraph RENDER_CFG["Configuración"]
+      ENV_R["ENV vars  (Dashboard Render)\nSMTP_USER · SMTP_PASS\nALERT_EMAIL · BIWENGER_TOKEN\nMIN_DISCOUNT · MIN_PRICE"]
+      TOK_R[".token  (efímero)\nse pierde al reiniciar"]
     end
+  end
 
-    HTML  -->|"fetch /api/v2/..."| P1
-    HTML  -->|"fetch /cfapi/v2/..."| P2
-    HTML  -->|"POST token / check"| LAPI
-    LAPI  --> TOK
-    P1    -->|"Bearer JWT · X-League · X-Version · X-User"| AS
-    P2    -->|"sin auth"| CF
-    CRON  -->|"lee JWT"| TOK
-    CRON  -->|"lee umbrales"| ENV
-    CRON  -->|"GET /api/v2/market"| AS
-    CRON  -->|"GET world-cup/data"| CF
-    MAILER -->|"TLS 587"| SMTP
-    SMTP   --> BOX
+  subgraph MOBILE["📱  iPhone SE 2020  (Usuario)"]
+    SAFARI["Safari / Chrome Mobile"]
+    LS["localStorage\nbiw_board_2057487\nbiw_members_2057487"]
+  end
 
-    style CFG     fill:#0f172a,stroke:#334155,color:#94a3b8
-    style BROWSER fill:#0f172a,stroke:#1d4ed8,color:#93c5fd
-    style SERVER  fill:#0f172a,stroke:#15803d,color:#86efac
-    style EXT     fill:#0f172a,stroke:#b45309,color:#fcd34d
-    style EMAIL   fill:#0f172a,stroke:#7c3aed,color:#c4b5fd
-    </div>
-  </div>
-  <div class="legend">
-    <div class="li"><div class="dot" style="background:#1d4ed8"></div>Browser / React SPA</div>
-    <div class="li"><div class="dot" style="background:#15803d"></div>Servidor Node.js</div>
-    <div class="li"><div class="dot" style="background:#b45309"></div>APIs externas Biwenger</div>
-    <div class="li"><div class="dot" style="background:#7c3aed"></div>Sistema de email (Gmail)</div>
-    <div class="li"><div class="dot" style="background:#334155"></div>Configuración local</div>
-  </div>
+  subgraph BIW_SRV["☁️  Biwenger APIs"]
+    BIW_AS["biwenger.as.com\n/api/v2/account\n/api/v2/market\n/api/v2/league/:id/board\n/api/v2/league (standings)"]
+    BIW_CF["cf.biwenger.com\n/api/v2/competitions/\nworld-cup/data\nJSONP · sin auth · ~1300 jugadores"]
+  end
+
+  subgraph MAIL_SRV["📧  Gmail"]
+    SMTP_SRV["smtp.gmail.com:587\nTLS · App Password"]
+    INBOX["gabriel.iniesta@\nestudiants.upc.edu"]
+  end
+
+  DEV     -->|"git push origin main"| REPO
+  REPO    -->|"auto-deploy\nGitHub Actions"| PAGES
+  REPO    -->|"auto-deploy\nwebhook"| RENDER_URL
+
+  MOBILE  -->|"HTTPS · carga app"| PAGES_URL
+  SAFARI  -->|"fetch API calls\nhttps://biwenger-worldcup.onrender.com/api/*"| EXPRESS
+
+  EXPRESS --> P_API --> BIW_AS
+  EXPRESS --> P_CF  --> BIW_CF
+
+  L_API   --> TOK_R
+  CRON_R  -->|"lee BIWENGER_TOKEN"| ENV_R
+  CRON_R  --> P_API
+  CRON_R  --> P_CF
+  CRON_R  --> MAILER_R
+
+  MAILER_R -->|"TLS 587"| SMTP_SRV
+  SMTP_SRV --> INBOX
+
+  style DEV      fill:#f8fafc,stroke:#3b82f6,color:#1e293b
+  style GH       fill:#f8fafc,stroke:#334155,color:#1e293b
+  style RENDER   fill:#f8fafc,stroke:#16a34a,color:#1e293b
+  style MOBILE   fill:#f8fafc,stroke:#f97316,color:#1e293b
+  style BIW_SRV  fill:#f8fafc,stroke:#d97706,color:#1e293b
+  style MAIL_SRV fill:#f8fafc,stroke:#7c3aed,color:#1e293b
+</div>
+</div>
+<div class="legend">
+  <div class="li"><div class="dot" style="background:#3b82f6"></div>Máquina local (dev)</div>
+  <div class="li"><div class="dot" style="background:#334155"></div>GitHub (repo + Pages)</div>
+  <div class="li"><div class="dot" style="background:#16a34a"></div>Render.com (cloud)</div>
+  <div class="li"><div class="dot" style="background:#f97316"></div>iPhone (usuario)</div>
+  <div class="li"><div class="dot" style="background:#d97706"></div>APIs Biwenger</div>
+  <div class="li"><div class="dot" style="background:#7c3aed"></div>Gmail SMTP</div>
+</div>
 </div>
 
-<!-- ══════════════════════════════════════════════════════════════════════════
-     TAB 2 — FLUJO DE ALERTAS
-════════════════════════════════════════════════════════════════════════════ -->
-<div id="alert" class="panel">
-  <div class="mermaid-wrap">
-    <div class="mermaid">
-sequenceDiagram
-    actor U  as 👤 Usuario
-    participant UI  as 🌐 biwenger-intel-proxy.html
-    participant SRV as 🖥️ server.js
-    participant CF  as ☁️ cf.biwenger.com
-    participant BIW as ☁️ biwenger.as.com
-    participant ML  as 📧 Gmail SMTP
-
-    U  ->>  UI  : Abre la app + carga datos
-    UI ->>  SRV : POST /api-local/token {Bearer JWT}
-    SRV ->> SRV : Persiste JWT en .token
-
-    Note over SRV: setTimeout 30 s → primer check
-    Note over SRV: setInterval 5 min → checks periódicos
-
-    loop Cada 5 min (o POST /api-local/check-market)
-        SRV ->>  CF  : GET /api/v2/competitions/world-cup/data?lang=es
-        CF  -->> SRV : JSONP → playerMap {id: {name, team, price}}
-
-        SRV ->>  BIW : GET /api/v2/market  [Bearer JWT]
-        BIW -->> SRV : sales[] con player, price, until, user
-
-        loop Cada jugador en venta
-            alt equipo == España  AND  no alertado aún
-                SRV ->>  ML  : sendSpanishAlertEmail()
-                ML  -->> U   : 🇪🇸 Jugador español en el mercado
-            end
-            alt precio_venta ≤ valor_mercado × 0.90  AND  valor > 1M  AND  nuevo
-                SRV ->>  ML  : sendAlertEmail()
-                ML  -->> U   : 🔥 Chollo en el mercado
-            end
-        end
-    end
-
-    U  ->>  UI  : Pulsa "📧 Test alerta"
-    UI ->>  SRV : POST /api-local/check-market
-    SRV -->> UI : {ok: true}
-    Note over SRV: Ejecuta checkMarketAlerts() inmediatamente
-    </div>
-  </div>
-</div>
-
-<!-- ══════════════════════════════════════════════════════════════════════════
-     TAB 3 — FLUJO DE DATOS UI
-════════════════════════════════════════════════════════════════════════════ -->
-<div id="data" class="panel">
-  <div class="mermaid-wrap">
-    <div class="mermaid">
+<!-- ═══════════════════════════ TAB 2 — HTTP ══════════════════════════════════ -->
+<div id="http" class="panel">
+<div class="wrap">
+<div class="mermaid">
 flowchart LR
-    subgraph STORE["💾 localStorage"]
-        LS1["biw_board_2057487\n{board[], lastEventDate,\nsavedAt}"]
-        LS2["biw_members_2057487\n{members{}, savedAt}"]
-    end
 
-    subgraph APP["🌐 React App"]
-        LA["loadAll(forceRefresh)"]
-        FB["fetchBoard(sinceDate)\npagina offset +16\npara al llegar\na evento cacheado"]
-        FP["fetchPlayerMap()\n1. JSONP cf.biwenger\n2. market fallback"]
-        CB["calcBalances(events)\ntodos empiezan 20M\ntransfer: from+=amt\n           to −=amt\nmarket:    to −=amt"]
-        TABS["Saldos | Tablón\nMercado | Jugadores\nStats"]
-    end
+  subgraph IPHONE["📱 iPhone  ·  biwenger-intel-proxy.html"]
+    direction TB
+    A1["loadAll()"]
+    A2["fetchBoard(sinceDate)"]
+    A3["fetchPlayerMap()"]
+    A4["calcBalances()"]
+    A5["localStorage cache"]
+    A1 --> A2 & A3
+    A2 & A3 --> A4
+    A4 --> A5
+  end
 
-    subgraph PROX["🖥️ Proxies server.js"]
-        PA["/api/* → biwenger.as.com"]
-        PC["/cfapi/* → cf.biwenger.com"]
-    end
+  subgraph RENDER["☁️ Render  ·  server.js  :443"]
+    direction TB
+    R1["GET  /api/v2/account"]
+    R2["GET  /api/v2/league?include=all"]
+    R3["GET  /api/v2/league/2057487/board\n?offset=N&limit=16"]
+    R4["GET  /api/v2/market"]
+    R5["GET  /cfapi/v2/competitions/\nworld-cup/data?lang=es&score=3"]
+    R6["POST /api-local/token\n{token: Bearer JWT}"]
+    R7["POST /api-local/check-market"]
+    R8["GET  /api-local/alert-status"]
+  end
 
-    subgraph API["☁️ Biwenger"]
-        A1["GET /account → saldo real"]
-        A2["GET /league?include=all\n→ 20 managers"]
-        A3["GET /board?offset=N\n→ eventos paginados"]
-        A4["GET /market\n→ jugadores en venta"]
-        A5["cf: world-cup/data\n→ 1300 jugadores JSONP"]
-    end
+  subgraph BIW_AS["☁️ biwenger.as.com"]
+    B1["account\n→ saldo real propio"]
+    B2["league?include=all\n→ 20 managers + standings"]
+    B3["board?offset=N\n→ eventos paginados\nnuevest-first"]
+    B4["market\n→ ventas activas\n+ ofertas"]
+  end
 
-    LA -->|"cache HIT"| LS1
-    LA -->|"cache HIT"| LS2
-    LA -->|"nuevos eventos\nsinceDate=lastEventDate"| FB
-    LA -->|"cache MISS: sinceDate=0\n(carga completa)"| FB
+  subgraph BIW_CF["☁️ cf.biwenger.com"]
+    C1["world-cup/data JSONP\n→ playerMap\n{id→name,team,price}\n~1300 jugadores"]
+  end
 
-    FB --> PA --> A3
-    LA --> PA --> A1
-    LA --> PA --> A2
-    LA --> PA --> A4
-    FP --> PC --> A5
-    FP --> PA --> A4
+  A1 -->|"Bearer JWT\nX-League: 2057487\nX-Version: 630\nX-User: 13532644"| R1
+  A1 --> R2
+  A2 -->|"pagina offset+16\npara cuando date≤lastEventDate"| R3
+  A1 --> R4
+  A3 --> R5
+  A1 --> R6
+  A1 --> R7
+  A1 --> R8
 
-    FB  -->|"merge + dedup"| CB
-    CB  --> TABS
-    FP  --> TABS
-    LA  -->|"cacheSave()"| LS1
-    LA  -->|"cacheSave()"| LS2
+  R1 -->|"proxy inyecta\nheaders CORS + Auth"| B1
+  R2 --> B2
+  R3 --> B3
+  R4 --> B4
+  R5 -->|"sin auth\nJSONP callback=BIW_CB"| C1
 
-    style STORE fill:#0f172a,stroke:#334155,color:#94a3b8
-    style APP   fill:#0f172a,stroke:#1d4ed8,color:#93c5fd
-    style PROX  fill:#0f172a,stroke:#15803d,color:#86efac
-    style API   fill:#0f172a,stroke:#b45309,color:#fcd34d
-    </div>
-  </div>
+  style IPHONE fill:#fff7ed,stroke:#f97316,color:#1e293b
+  style RENDER fill:#f0fdf4,stroke:#16a34a,color:#1e293b
+  style BIW_AS fill:#fffbeb,stroke:#d97706,color:#1e293b
+  style BIW_CF fill:#fefce8,stroke:#ca8a04,color:#1e293b
+</div>
+</div>
 </div>
 
-<!-- ══════════════════════════════════════════════════════════════════════════
-     TAB 4 — FICHEROS DEL PROYECTO
-════════════════════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════ TAB 3 — DEPLOY ═══════════════════════════════ -->
+<div id="deploy" class="panel">
+<div class="wrap">
+<div class="mermaid">
+flowchart TD
+
+  DEV["💻 VS Code / Claude Code\nC:/Users/_adderein_2/Desktop/Biwenger/"]
+
+  subgraph GIT["Git local  (.git/)"]
+    COMMIT["git add . && git commit\ngit push origin main"]
+  end
+
+  subgraph GITHUB["🐙 GitHub  ·  gabiPRO8/Biwenger-WorldCup"]
+    MAIN["branch: main\n✓ server.js\n✓ biwenger-intel-proxy.html\n✓ architecture.html\n✓ index.html\n✓ package.json\n✓ .env.example\n✗ .env  (gitignored)\n✗ .token  (gitignored)\n✗ node_modules/  (gitignored)"]
+  end
+
+  subgraph PAGES_DEPLOY["📄 GitHub Pages  (auto)"]
+    PAGES_BUILD["Build: ninguno\n(HTML estático)"]
+    PAGES_LIVE["Live en ~2 min\ngabipro8.github.io/\nBiwenger-WorldCup/"]
+  end
+
+  subgraph RENDER_DEPLOY["☁️ Render.com  (auto)"]
+    RENDER_BUILD["Build command:\nnpm install"]
+    RENDER_START["Start command:\nnode server.js"]
+    RENDER_ENV2["ENV vars configuradas\nen Render Dashboard:\nSMTP_USER / SMTP_PASS\nALERT_EMAIL\nBIWENGER_TOKEN\nMIN_DISCOUNT / MIN_PRICE\nCHECK_EVERY"]
+    RENDER_LIVE["Live en ~3 min\nbiwenger-worldcup.onrender.com"]
+  end
+
+  subgraph USER_ACCESS["👤 Acceso"]
+    MOBILE_ACC["📱 iPhone\ngabipro8.github.io/Biwenger-WorldCup/\n→ carga HTML\n→ llama a Render API"]
+    LOCAL_ACC["💻 Local\nlocalhost:8080/biwenger-intel-proxy.html\n→ todo en local"]
+  end
+
+  DEV --> COMMIT --> MAIN
+  MAIN -->|"Settings → Pages\nbranch: main / root"| PAGES_BUILD --> PAGES_LIVE
+  MAIN -->|"Connect repo\nwebhook auto-deploy"| RENDER_BUILD
+  RENDER_BUILD --> RENDER_START
+  RENDER_ENV2 --> RENDER_START
+  RENDER_START --> RENDER_LIVE
+
+  PAGES_LIVE --> MOBILE_ACC
+  RENDER_LIVE --> MOBILE_ACC
+  DEV --> LOCAL_ACC
+
+  style DEV          fill:#eff6ff,stroke:#3b82f6,color:#1e293b
+  style GIT          fill:#f8fafc,stroke:#475569,color:#1e293b
+  style GITHUB       fill:#f8fafc,stroke:#334155,color:#1e293b
+  style PAGES_DEPLOY fill:#f0f9ff,stroke:#0284c7,color:#1e293b
+  style RENDER_DEPLOY fill:#f0fdf4,stroke:#16a34a,color:#1e293b
+  style USER_ACCESS  fill:#fff7ed,stroke:#f97316,color:#1e293b
+</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════ TAB 4 — ALERTAS ══════════════════════════════ -->
+<div id="alerts" class="panel">
+<div class="wrap">
+<div class="mermaid">
+sequenceDiagram
+  actor U  as 👤 Gabriel
+  participant PH as 📱 iPhone App
+  participant RN as ☁️ Render  server.js
+  participant CF as 🌍 cf.biwenger.com
+  participant BW as 🌍 biwenger.as.com
+  participant ML as 📧 Gmail SMTP
+
+  Note over RN: Arranque: setTimeout 30s → primer check
+  Note over RN: setInterval cada 5 min → checks automáticos
+
+  U  ->>  PH : Abre la app
+  PH ->>  RN : POST /api-local/token  {Bearer JWT}
+  RN ->>  RN : cachedToken = JWT\nguarda en .token (disco)
+  RN -->> PH : {ok: true}
+
+  loop Cada 5 minutos  (o manual desde botón "📧 Test alerta")
+
+    RN ->>  CF : GET /api/v2/competitions/world-cup/data?lang=es&score=3&callback=BIW_CB
+    CF -->> RN : JSONP  playerMap  {id → {name, team, price}}  ~1300 jugadores
+
+    RN ->>  BW : GET /api/v2/market  [Authorization: Bearer JWT]
+    BW -->> RN : {sales: [{player, price, until, user}]}
+
+    loop Por cada jugador en venta
+      RN ->>  RN : team == "España"?
+      alt ✅ Jugador español  AND  no alertado antes
+        RN ->>  ML : sendSpanishAlertEmail(player)
+        ML -->> U  : 🇪🇸 Asunto: "Jugador español en el mercado"
+      end
+
+      RN ->>  RN : price ≤ marketValue × 0.90  AND  marketValue ≥ 1M ?
+      alt ✅ Chollo nuevo
+        RN ->>  ML : sendAlertEmail(bargain)
+        ML -->> U  : 🔥 Asunto: "Chollo en el mercado"
+      end
+    end
+
+    Note over RN: Añade clave pid_price_until a Set<br/>→ no repite la misma alerta
+  end
+
+  U  ->>  PH : Pulsa "📧 Test alerta"
+  PH ->>  RN : POST /api-local/check-market
+  RN -->> PH : {ok: true, message: "Check iniciado"}
+  Note over RN: Ejecuta checkMarketAlerts(forced=true) inmediatamente
+</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════ TAB 5 — FICHEROS ═════════════════════════════ -->
 <div id="files" class="panel">
-  <div class="mermaid-wrap" style="padding:28px 28px 24px">
-    <div class="files-grid">
+<div class="wrap" style="padding:20px">
+  <div class="grid">
 
-      <div class="file-card">
-        <div class="file-name">server.js</div>
-        <div class="file-desc">Servidor Express. Proxy hacia biwenger.as.com y cf.biwenger.com. API local para token y alertas. Cron de mercado con nodemailer.</div>
-        <span class="file-tag" style="background:#15803d22;color:#86efac;border:1px solid #15803d44">Node.js · backend</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">biwenger-intel-proxy.html</div>
-        <div class="file-desc">App principal. React 18 + Babel CDN. Tabs: Saldos, Tablón, Mercado, Jugadores, Stats. Caché en localStorage. Se sirve desde el proxy.</div>
-        <span class="file-tag" style="background:#1d4ed822;color:#93c5fd;border:1px solid #1d4ed844">React SPA · frontend</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">architecture.html</div>
-        <div class="file-desc">Este archivo. Diagramas Mermaid del sistema: arquitectura general, flujo de alertas, flujo de datos, inventario de ficheros.</div>
-        <span class="file-tag" style="background:#7c3aed22;color:#c4b5fd;border:1px solid #7c3aed44">Documentación</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">CONTEXT.md</div>
-        <div class="file-desc">Briefing completo del proyecto para LLMs. Endpoints documentados, lógica de saldos, semántica from/to, roadmap.</div>
-        <span class="file-tag" style="background:#7c3aed22;color:#c4b5fd;border:1px solid #7c3aed44">Documentación</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">.env</div>
-        <div class="file-desc">Variables de entorno. SMTP_USER, SMTP_PASS, ALERT_EMAIL, MIN_DISCOUNT, MIN_PRICE, CHECK_EVERY. No commiteado (.gitignore).</div>
-        <span class="file-tag" style="background:#b4530922;color:#fcd34d;border:1px solid #b4530944">Config · secretos</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">.env.example</div>
-        <div class="file-desc">Plantilla del .env con todas las variables documentadas y valores de ejemplo. Sí commiteado.</div>
-        <span class="file-tag" style="background:#33415522;color:#94a3b8;border:1px solid #33415544">Config · template</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">.token</div>
-        <div class="file-desc">JWT Bearer cacheado en disco. Lo escribe server.js cuando la UI hace POST /api-local/token. Lo lee el cron de alertas. No commiteado.</div>
-        <span class="file-tag" style="background:#b4530922;color:#fcd34d;border:1px solid #b4530944">Runtime · secretos</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">package.json</div>
-        <div class="file-desc">Dependencias: express, http-proxy-middleware, nodemailer, dotenv. Scripts: start / dev → node server.js.</div>
-        <span class="file-tag" style="background:#15803d22;color:#86efac;border:1px solid #15803d44">Node.js · config</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">README.md</div>
-        <div class="file-desc">Instrucciones de arranque, requisitos, configuración del token y SMTP.</div>
-        <span class="file-tag" style="background:#7c3aed22;color:#c4b5fd;border:1px solid #7c3aed44">Documentación</span>
-      </div>
-
-      <div class="file-card">
-        <div class="file-name">node_modules/</div>
-        <div class="file-desc">Dependencias instaladas por npm. No editar. Regenerar con npm install.</div>
-        <span class="file-tag" style="background:#33415522;color:#94a3b8;border:1px solid #33415544">npm · generado</span>
-      </div>
-
+    <div class="fcard" style="border-left-color:#f97316">
+      <div class="fname">biwenger-intel-proxy.html</div>
+      <div class="fdesc">App principal. React 18 + Babel CDN. Tabs: Saldos, Tablón, Mercado, Jugadores, Stats. localStorage cache. SERVER_URL auto-detect (localhost vs GitHub Pages).</div>
+      <span class="ftag" style="background:#fff7ed;color:#f97316">React SPA · frontend</span>
     </div>
+
+    <div class="fcard" style="border-left-color:#16a34a">
+      <div class="fname">server.js</div>
+      <div class="fdesc">Servidor Express. Proxy /api/* → biwenger.as.com. Proxy /cfapi/* → cf.biwenger.com. API local /api-local/*. Cron de alertas cada 5 min. nodemailer.</div>
+      <span class="ftag" style="background:#f0fdf4;color:#16a34a">Node.js · backend</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#7c3aed">
+      <div class="fname">architecture.html</div>
+      <div class="fdesc">Este archivo. Diagramas Mermaid del sistema: infraestructura, peticiones HTTP, deploy pipeline, alertas, inventario de ficheros.</div>
+      <span class="ftag" style="background:#f5f3ff;color:#7c3aed">Documentación</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#7c3aed">
+      <div class="fname">CONTEXT.md</div>
+      <div class="fdesc">Briefing completo para LLMs. Endpoints documentados, lógica de saldos, semántica from/to transfers, API keys, roadmap.</div>
+      <span class="ftag" style="background:#f5f3ff;color:#7c3aed">Documentación · LLM</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#dc2626">
+      <div class="fname">.env</div>
+      <div class="fdesc">Secretos locales. SMTP_USER, SMTP_PASS (App Password Gmail), ALERT_EMAIL, MIN_DISCOUNT, MIN_PRICE, CHECK_EVERY. <strong>Gitignored.</strong></div>
+      <span class="ftag" style="background:#fef2f2;color:#dc2626">Config · secretos · local</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#94a3b8">
+      <div class="fname">.env.example</div>
+      <div class="fdesc">Plantilla pública del .env. Todas las variables con valores de ejemplo. Se commitea al repo.</div>
+      <span class="ftag" style="background:#f8fafc;color:#64748b">Config · template</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#dc2626">
+      <div class="fname">.token</div>
+      <div class="fdesc">JWT Bearer cacheado en disco. Lo escribe server.js cuando la UI hace POST /api-local/token. Lo lee el cron. Efímero en Render (se pierde al reiniciar). <strong>Gitignored.</strong></div>
+      <span class="ftag" style="background:#fef2f2;color:#dc2626">Runtime · secretos</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#3b82f6">
+      <div class="fname">index.html</div>
+      <div class="fdesc">Redirige automáticamente a biwenger-intel-proxy.html. Necesario para que la raíz de GitHub Pages (gabipro8.github.io/Biwenger-WorldCup/) funcione.</div>
+      <span class="ftag" style="background:#eff6ff;color:#3b82f6">Redirect · frontend</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#16a34a">
+      <div class="fname">package.json</div>
+      <div class="fdesc">Dependencias: express, http-proxy-middleware, nodemailer, dotenv. Scripts: start / dev → node server.js. Node ≥18.</div>
+      <span class="ftag" style="background:#f0fdf4;color:#16a34a">Node.js · config</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#94a3b8">
+      <div class="fname">.gitignore</div>
+      <div class="fdesc">Excluye: node_modules/, .env, .token, .claude/projects/, .claude/settings.json, *.log, .DS_Store, Thumbs.db</div>
+      <span class="ftag" style="background:#f8fafc;color:#64748b">Git · config</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#94a3b8">
+      <div class="fname">README.md</div>
+      <div class="fdesc">Instalación, configuración del token, configuración SMTP, features, endpoints API usados.</div>
+      <span class="ftag" style="background:#f8fafc;color:#64748b">Documentación</span>
+    </div>
+
+    <div class="fcard" style="border-left-color:#3b82f6">
+      <div class="fname">.claude/launch.json</div>
+      <div class="fdesc">Config del servidor para el panel de preview de Claude Code. Define el comando npm start en el puerto 8080.</div>
+      <span class="ftag" style="background:#eff6ff;color:#3b82f6">Claude Code · dev</span>
+    </div>
+
   </div>
+</div>
 </div>
 
 <script>
-  mermaid.initialize({
-    startOnLoad: true,
-    theme: 'dark',
-    themeVariables: {
-      background:          '#0f172a',
-      primaryColor:        '#1e3a5f',
-      primaryTextColor:    '#e2e8f0',
-      secondaryColor:      '#0f2a3f',
-      tertiaryColor:       '#0a1628',
-      lineColor:           '#475569',
-      edgeLabelBackground: '#0d1117',
-      fontSize:            '13px',
-    },
-    flowchart: { curve: 'basis', padding: 24, nodeSpacing: 40, rankSpacing: 60 },
-    sequence:  { actorMargin: 60, messageMargin: 15, width: 160 },
-  });
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    primaryColor:        '#fff7ed',
+    primaryTextColor:    '#1e293b',
+    primaryBorderColor:  '#e2e8f0',
+    lineColor:           '#94a3b8',
+    secondaryColor:      '#f0fdf4',
+    tertiaryColor:       '#f0f9ff',
+    background:          '#ffffff',
+    mainBkg:             '#ffffff',
+    nodeBorder:          '#e2e8f0',
+    clusterBkg:          '#f8fafc',
+    clusterBorder:       '#e2e8f0',
+    edgeLabelBackground: '#ffffff',
+    fontSize:            '12px',
+    fontFamily:          'Segoe UI, sans-serif',
+    actorBkg:            '#fff7ed',
+    actorBorder:         '#f97316',
+    actorTextColor:      '#1e293b',
+    activationBkgColor:  '#fff7ed',
+    activationBorderColor:'#f97316',
+    sequenceNumberColor: '#f97316',
+    noteBkgColor:        '#fefce8',
+    noteTextColor:       '#1e293b',
+  },
+  flowchart:{ curve:'basis', padding:20, nodeSpacing:40, rankSpacing:50 },
+  sequence: { actorMargin:60, messageMargin:20, width:150, mirrorActors:false },
+});
 
-  function showTab(id, el) {
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.getElementById(id).classList.add('active');
-    el.classList.add('active');
-  }
+function show(id, el) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  el.classList.add('active');
+}
 </script>
 </body>
 </html>
