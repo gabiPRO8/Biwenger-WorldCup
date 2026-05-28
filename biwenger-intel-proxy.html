@@ -10,10 +10,12 @@
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#080c12;font-family:'Barlow',sans-serif;color:#e2e8f0}
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-track{background:#0d1117}
-::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:3px}
+body{background:#f8fafc;font-family:'Barlow',sans-serif;color:#1e293b;-webkit-tap-highlight-color:transparent}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:#f1f5f9}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+input,button,select{-webkit-appearance:none;appearance:none}
+table{-webkit-overflow-scrolling:touch}
 </style>
 </head>
 <body>
@@ -444,7 +446,7 @@ function App() {
             {loading ? `⟳ ${loadStep||"Cargando..."}` : "↻ Actualizar"}
           </button>
           <button
-            style={{...S.btn, background:"#334155", fontSize:11}}
+            style={{...S.btn, background:"#64748b", fontSize:11}}
             onClick={() => loadAll(true)}
             disabled={loading}
             title="Borrar caché y recargar todo desde la API"
@@ -490,10 +492,10 @@ function App() {
         {/* CORS ERROR */}
         {error && (
           <div style={S.errorBox}>
-            <div style={{fontWeight:600,color:"#f87171",marginBottom:8}}>⚠ {error}</div>
+            <div style={{fontWeight:600,color:"#dc2626",marginBottom:8}}>⚠ {error}</div>
             {isCors && (
               <div style={S.corsBox}>
-                <strong style={{color:"#60a5fa"}}>🔒 Error CORS — Soluciones:</strong><br/><br/>
+                <strong style={{color:"#3b82f6"}}>🔒 Error CORS — Soluciones:</strong><br/><br/>
                 <strong>① Extensión (más fácil):</strong> Instala <code style={S.code}>CORS Everywhere</code> en Firefox o <code style={S.code}>Allow CORS</code> en Chrome. Actívala y recarga.<br/><br/>
                 <strong>② Servidor local:</strong> En la carpeta donde está este HTML:<br/>
                 <code style={{...S.code,display:"block",margin:"6px 0",padding:"8px"}}>python -m http.server 8080</code>
@@ -598,7 +600,7 @@ function App() {
                         <td style={{...S.td,...S.rankCell,color:i<3?"#f97316":"#475569"}}>{i+1}</td>
                         <td style={S.td}>
                           <div style={{display:"flex",alignItems:"center",gap:8}}>
-                            <div style={{...S.avatar,background:isExpanded?"#1d4ed8":"#1e3a5f"}}>{initials(m.name)}</div>
+                            <div style={{...S.avatar,background:isExpanded?"#f97316":"#fed7aa"}}>{initials(m.name)}</div>
                             <span>{m.name}</span>
                             {m.isOwn && <span style={S.ownBadge}>TÚ</span>}
                             <span style={{fontSize:10,color:"#475569"}}>{isExpanded?"▲":"▼"}</span>
@@ -607,11 +609,11 @@ function App() {
                         <td style={{...S.td,...S.moneyCell,color:{rich:"#4ade80",mid:"#facc15",tight:"#f87171"}[bc]}}>
                           {fmt(m.balance)}
                         </td>
-                        <td style={{...S.td,...S.moneyCell,color:"#38bdf8"}}>
-                          {realMBal != null ? fmt(realMBal) : <span style={{color:"#1e3a5f"}}>—</span>}
+                        <td style={{...S.td,...S.moneyCell,color:"#f97316"}}>
+                          {realMBal != null ? fmt(realMBal) : <span style={{color:"#cbd5e1"}}>—</span>}
                         </td>
                         <td style={{...S.td,...S.moneyCell,color:diffColor}}>
-                          {diffReal == null ? <span style={{color:"#1e3a5f"}}>—</span>
+                          {diffReal == null ? <span style={{color:"#cbd5e1"}}>—</span>
                             : `${diffReal>=0?"+":""}${fmt(diffReal)}`}
                         </td>
                         <td style={S.td}>
@@ -622,20 +624,20 @@ function App() {
                         <td style={{...S.td,...S.moneyCell,color:delta>=0?"#4ade80":"#f87171"}}>
                           {delta>=0?"+":""}{fmt(delta)}
                         </td>
-                        <td style={{...S.td,...S.moneyCell,color:"#f87171"}}>-{fmt(spent)}</td>
-                        <td style={{...S.td,...S.moneyCell,color:"#4ade80"}}>+{fmt(earned)}</td>
+                        <td style={{...S.td,...S.moneyCell,color:"#dc2626"}}>-{fmt(spent)}</td>
+                        <td style={{...S.td,...S.moneyCell,color:"#16a34a"}}>+{fmt(earned)}</td>
                       </tr>
                       {isExpanded && (
                         <tr>
-                          <td colSpan={9} style={{padding:0,background:"#060a10",borderBottom:"2px solid #1d4ed8"}}>
+                          <td colSpan={9} style={{padding:0,background:"#f8fafc",borderBottom:"2px solid #f97316"}}>
                             <div style={{padding:"12px 20px"}}>
                               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"#60a5fa"}}>
+                                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"#3b82f6"}}>
                                   Trazabilidad de {m.name} · {txs.length} operaciones
                                 </span>
                                 <span style={{fontSize:12,color:"#475569"}}>
                                   20.00M inicial → <span style={{color:{rich:"#4ade80",mid:"#facc15",tight:"#f87171"}[bc],fontWeight:700}}>{fmt(m.balance)}</span> estimado
-                                  {realMBal!=null && <> · <span style={{color:"#38bdf8",fontWeight:700}}>{fmt(realMBal)}</span> real</>}
+                                  {realMBal!=null && <> · <span style={{color:"#f97316",fontWeight:700}}>{fmt(realMBal)}</span> real</>}
                                 </span>
                               </div>
                               {txs.length===0 ? (
@@ -659,8 +661,8 @@ function App() {
                                         </td>
                                         <td style={{...S.td,padding:"6px 10px"}}>
                                           <span style={{padding:"2px 8px",borderRadius:3,fontSize:10,fontWeight:700,
-                                            background:tx.isBuy?"#450a0a":"#064e3b",
-                                            color:tx.isBuy?"#f87171":"#4ade80"}}>
+                                            background:tx.isBuy?"#fee2e2":"#dcfce7",
+                                            color:tx.isBuy?"#dc2626":"#16a34a"}}>
                                             {tx.isBuy ? "COMPRA" : "VENTA"}
                                           </span>
                                         </td>
@@ -669,7 +671,7 @@ function App() {
                                           {tx.isBuy?"-":"+"}{fmtK(tx.amount)}
                                         </td>
                                         <td style={{...S.td,padding:"6px 10px",color:"#94a3b8"}}>{tx.contra}</td>
-                                        <td style={{...S.td,padding:"6px 10px",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,color:"#e2e8f0"}}>
+                                        <td style={{...S.td,padding:"6px 10px",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,color:"#1e293b"}}>
                                           {fmt(tx.balAfter)}
                                         </td>
                                       </tr>
@@ -721,7 +723,7 @@ function App() {
                       <div key={ci} style={S.eventItem}>
                         {pos && <span style={{...S.posTag,background:posColor(pos)+"22",color:posColor(pos),border:`1px solid ${posColor(pos)}44`}}>{posLabel(pos)}</span>}
                         <span style={S.playerTag}>⚽ {name}{team && <span style={{marginLeft:4,fontSize:10,color:"#94a3b8",fontWeight:400}}>{team}</span>}</span>
-                        <span style={{...S.money,color:"#f87171"}}>-{fmt(c.amount)}</span>
+                        <span style={{...S.money,color:"#dc2626"}}>-{fmt(c.amount)}</span>
                         <span style={{color:"#475569",fontSize:11}}>←</span>
                         <span style={{fontSize:13,color:"#94a3b8"}}>{c.from?.name||"Mercado"}</span>
                         {c.to && <><span style={{color:"#475569",fontSize:11}}>→</span><span style={{fontSize:13,color:"#94a3b8"}}>{c.to.name}</span></>}
@@ -732,7 +734,7 @@ function App() {
                       <div key={ci} style={S.eventItem}>
                         {pos && <span style={{...S.posTag,background:posColor(pos)+"22",color:posColor(pos),border:`1px solid ${posColor(pos)}44`}}>{posLabel(pos)}</span>}
                         <span style={S.playerTag}>⚽ {name}{team && <span style={{marginLeft:4,fontSize:10,color:"#94a3b8",fontWeight:400}}>{team}</span>}</span>
-                        <span style={{...S.money,color:"#f87171"}}>-{fmt(c.amount)}</span>
+                        <span style={{...S.money,color:"#dc2626"}}>-{fmt(c.amount)}</span>
                         <span style={{color:"#475569",fontSize:11}}>→</span>
                         <span style={{fontSize:13,color:"#94a3b8"}}>{c.to?.name||members[c.to?.id]?.name||`User ${c.to?.id}`}</span>
                       </div>
@@ -763,7 +765,7 @@ function App() {
                 </div>
                 <div style={S.statCard}>
                   <div style={S.statLabel}>Tu saldo</div>
-                  <div style={{...S.statValue,color:"#38bdf8"}}>{fmt(ownBalance)}</div>
+                  <div style={{...S.statValue,color:"#f97316"}}>{fmt(ownBalance)}</div>
                 </div>
               </div>
               <div style={S.card}>
@@ -791,14 +793,14 @@ function App() {
                             {team && <span style={{marginLeft:5,fontSize:10,color:"#64748b"}}>{team}</span>}
                           </td>
                           <td style={{...S.td,color:"#94a3b8"}}>{pos?posLabel(pos):"—"}</td>
-                          <td style={{...S.td,...S.moneyCell,color:"#facc15"}}>{fmt(s.price)}</td>
+                          <td style={{...S.td,...S.moneyCell,color:"#d97706"}}>{fmt(s.price)}</td>
                           <td style={{...S.td,...S.moneyCell,color:"#64748b"}}>{mktPrice?fmt(mktPrice):"—"}</td>
                           <td style={{...S.td,fontSize:13,color:"#94a3b8"}}>{seller}</td>
                           <td style={{...S.td,fontSize:12,color:"#64748b"}}>{expires}</td>
                           <td style={S.td}>
                             <span style={{padding:"3px 10px",borderRadius:4,fontSize:11,fontWeight:700,
-                              background:canBuy?"#064e3b":"#450a0a",
-                              color:canBuy?"#4ade80":"#f87171"}}>
+                              background:canBuy?"#dcfce7":"#fee2e2",
+                              color:canBuy?"#16a34a":"#dc2626"}}>
                               {canBuy?"✓ Sí":"✗ No"}
                             </span>
                           </td>
@@ -818,7 +820,7 @@ function App() {
             <div style={S.sectionTitle}>{Object.keys(playerMap).length} jugadores mapeados</div>
           </div>
           <div style={{...S.corsBox,marginBottom:20}}>
-            <strong style={{color:"#60a5fa"}}>🔍 Estado del mapeo de jugadores</strong><br/><br/>
+            <strong style={{color:"#3b82f6"}}>🔍 Estado del mapeo de jugadores</strong><br/><br/>
             <strong>Fuentes probadas:</strong><br/>
             {playerEndpoints.map((ep,i)=>(
               <div key={i} style={{fontSize:12,marginTop:4}}>
@@ -910,8 +912,8 @@ function App() {
                         </div>
                       </td>
                       <td style={{...S.td,textAlign:"center"}}>{ops}</td>
-                      <td style={{...S.td,...S.moneyCell,color:"#f87171"}}>-{fmt(spent)}</td>
-                      <td style={{...S.td,...S.moneyCell,color:"#4ade80"}}>+{fmt(earned)}</td>
+                      <td style={{...S.td,...S.moneyCell,color:"#dc2626"}}>-{fmt(spent)}</td>
+                      <td style={{...S.td,...S.moneyCell,color:"#16a34a"}}>+{fmt(earned)}</td>
                       <td style={{...S.td,...S.moneyCell,color:net>=0?"#4ade80":"#f87171"}}>{net>=0?"+":""}{fmt(net)}</td>
                     </tr>
                   );
@@ -927,49 +929,49 @@ function App() {
 
 // ─── STYLES ──────────────────────────────────────────────────────────────────
 const S = {
-  app:        { fontFamily:"'Barlow',sans-serif", background:"#080c12", color:"#e2e8f0", minHeight:"100vh" },
-  header:     { background:"linear-gradient(135deg,#0d1117 0%,#161d2a 100%)", borderBottom:"1px solid #1e3a5f", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between" },
-  logo:       { fontFamily:"'Barlow Condensed',sans-serif", fontSize:22, fontWeight:800, letterSpacing:2, color:"#38bdf8", textTransform:"uppercase" },
-  meta:       { fontSize:12, color:"#475569", marginTop:2 },
-  btn:        { background:"#1e3a5f", color:"#38bdf8", border:"1px solid #1d4ed8", padding:"8px 18px", borderRadius:6, cursor:"pointer", fontFamily:"'Barlow',sans-serif", fontSize:13, fontWeight:500 },
-  tokenBar:   { background:"#0a0e14", borderBottom:"1px solid #1a2535", padding:"8px 24px", display:"flex", alignItems:"center", gap:12 },
-  tokenInput: { flex:1, background:"#0d1117", border:"1px solid #1e3a5f", borderRadius:6, padding:"6px 12px", color:"#94a3b8", fontSize:12, fontFamily:"monospace", outline:"none" },
-  tabBar:     { display:"flex", gap:2, padding:"14px 24px 0", background:"#0d1117", borderBottom:"1px solid #1e3a5f" },
-  tab:        { fontFamily:"'Barlow Condensed',sans-serif", fontSize:13, letterSpacing:1, textTransform:"uppercase", padding:"10px 18px", cursor:"pointer", color:"#64748b", borderBottom:"3px solid transparent", fontWeight:700 },
-  tabActive:  { color:"#38bdf8", borderBottomColor:"#38bdf8" },
-  content:    { padding:24 },
-  loadBar:    { height:3, background:"#1e3a5f", borderRadius:3, overflow:"hidden", marginBottom:20 },
-  loadBarInner: { height:"100%", width:"40%", background:"linear-gradient(90deg,#1d4ed8,#38bdf8)", animation:"slide 1s ease-in-out infinite", borderRadius:3 },
-  errorBox:   { background:"#1a0f0f", border:"1px solid #7f1d1d", borderRadius:8, padding:16, marginBottom:16 },
-  corsBox:    { background:"#0f1f2e", border:"1px solid #1d4ed8", borderRadius:8, padding:16, color:"#93c5fd", fontSize:13, lineHeight:1.8, marginBottom:16 },
-  code:       { background:"#1e3a5f", padding:"2px 6px", borderRadius:4, fontFamily:"monospace", fontSize:11, color:"#93c5fd" },
-  sectionTitle:{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:3, textTransform:"uppercase", color:"#475569", marginBottom:16 },
-  statsGrid:  { display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:14, marginBottom:24 },
-  statCard:   { background:"#0d1117", border:"1px solid #1e2d40", borderRadius:10, padding:"18px 20px" },
-  statLabel:  { fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:2, textTransform:"uppercase", color:"#475569", marginBottom:8 },
-  statValue:  { fontFamily:"'Barlow Condensed',sans-serif", fontSize:28, fontWeight:700, color:"#e2e8f0" },
-  card:       { background:"#0d1117", border:"1px solid #1e2d40", borderRadius:10, overflow:"hidden", marginBottom:24 },
-  table:      { width:"100%", borderCollapse:"collapse" },
-  th:         { fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:2, textTransform:"uppercase", color:"#475569", padding:"12px 14px", textAlign:"left", borderBottom:"1px solid #1e2d40", background:"#080c12", whiteSpace:"nowrap" },
-  td:         { padding:"11px 14px", borderBottom:"1px solid #0d1a28", fontSize:14, verticalAlign:"middle" },
-  rankCell:   { fontFamily:"'Barlow Condensed',sans-serif", fontSize:17, fontWeight:700, width:32, textAlign:"center" },
-  moneyCell:  { fontFamily:"'Barlow Condensed',sans-serif", fontSize:16, fontWeight:700 },
-  ownRow:     { background:"#0a1929" },
-  avatar:     { width:28, height:28, borderRadius:"50%", background:"#1e3a5f", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, color:"#38bdf8", fontWeight:700, flexShrink:0 },
-  ownBadge:   { background:"#0ea5e9", color:"#fff", fontSize:9, letterSpacing:1, padding:"2px 6px", borderRadius:3, fontWeight:700 },
-  badge:      { display:"inline-block", fontSize:11, padding:"3px 10px", borderRadius:12, fontWeight:600 },
-  badgeColors:{ rich:{background:"#064e3b",color:"#4ade80"}, mid:{background:"#3f2b00",color:"#facc15"}, tight:{background:"#450a0a",color:"#f87171"} },
-  boardEvent: { borderBottom:"1px solid #0d1a28", padding:"14px 16px" },
-  eventHeader:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 },
-  evType:     { fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:2, textTransform:"uppercase", padding:"3px 10px", borderRadius:4, fontWeight:700 },
-  evTransfer: { background:"#1e3a5f", color:"#60a5fa" },
-  evMarket:   { background:"#2a1f00", color:"#fb923c" },
-  evMove:     { background:"#1a0f2e", color:"#a78bfa" },
-  eventItem:  { display:"flex", alignItems:"center", gap:8, fontSize:13 },
-  playerTag:  { background:"#111827", border:"1px solid #1e3a5f", borderRadius:4, padding:"2px 8px", color:"#e2e8f0", fontSize:12 },
-  posTag:     { fontSize:10, fontWeight:700, padding:"2px 6px", borderRadius:3, letterSpacing:0.5 },
-  money:      { fontFamily:"'Barlow Condensed',sans-serif", fontSize:14, fontWeight:700 },
-  select:     { background:"#0d1117", border:"1px solid #1e3a5f", borderRadius:6, padding:"6px 12px", color:"#94a3b8", fontSize:13, outline:"none" },
+  app:         { fontFamily:"'Barlow',sans-serif", background:"#f8fafc", color:"#1e293b", minHeight:"100vh" },
+  header:      { background:"#fff", borderBottom:"1px solid #e2e8f0", padding:"12px 16px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8, boxShadow:"0 1px 4px rgba(0,0,0,.06)" },
+  logo:        { fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:800, letterSpacing:2, color:"#1e293b", textTransform:"uppercase" },
+  meta:        { fontSize:11, color:"#94a3b8", marginTop:2 },
+  btn:         { background:"#f97316", color:"#fff", border:"none", padding:"9px 16px", borderRadius:8, cursor:"pointer", fontFamily:"'Barlow',sans-serif", fontSize:13, fontWeight:600, minHeight:38, touchAction:"manipulation" },
+  tokenBar:    { background:"#fff", borderBottom:"1px solid #e2e8f0", padding:"8px 16px", display:"flex", alignItems:"center", gap:8 },
+  tokenInput:  { flex:1, background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"8px 10px", color:"#475569", fontSize:11, fontFamily:"monospace", outline:"none", minWidth:0 },
+  tabBar:      { display:"flex", gap:0, background:"#fff", borderBottom:"2px solid #f1f5f9", overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none" },
+  tab:         { fontFamily:"'Barlow Condensed',sans-serif", fontSize:12, letterSpacing:1, textTransform:"uppercase", padding:"13px 14px", cursor:"pointer", color:"#94a3b8", borderBottom:"3px solid transparent", fontWeight:700, whiteSpace:"nowrap", flexShrink:0, touchAction:"manipulation" },
+  tabActive:   { color:"#f97316", borderBottomColor:"#f97316" },
+  content:     { padding:16 },
+  loadBar:     { height:3, background:"#fed7aa", borderRadius:3, overflow:"hidden", marginBottom:20 },
+  loadBarInner:{ height:"100%", width:"40%", background:"linear-gradient(90deg,#f97316,#fb923c)", animation:"slide 1s ease-in-out infinite", borderRadius:3 },
+  errorBox:    { background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, padding:14, marginBottom:14 },
+  corsBox:     { background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:10, padding:14, color:"#1d4ed8", fontSize:13, lineHeight:1.8, marginBottom:14 },
+  code:        { background:"#f1f5f9", padding:"2px 6px", borderRadius:4, fontFamily:"monospace", fontSize:11, color:"#334155" },
+  sectionTitle:{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:3, textTransform:"uppercase", color:"#94a3b8", marginBottom:14 },
+  statsGrid:   { display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10, marginBottom:18 },
+  statCard:    { background:"#fff", border:"1px solid #e2e8f0", borderRadius:12, padding:"14px 16px", boxShadow:"0 1px 3px rgba(0,0,0,.04)" },
+  statLabel:   { fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:2, textTransform:"uppercase", color:"#94a3b8", marginBottom:6 },
+  statValue:   { fontFamily:"'Barlow Condensed',sans-serif", fontSize:24, fontWeight:700, color:"#1e293b" },
+  card:        { background:"#fff", border:"1px solid #e2e8f0", borderRadius:12, overflowX:"auto", marginBottom:16, boxShadow:"0 1px 3px rgba(0,0,0,.04)" },
+  table:       { width:"100%", borderCollapse:"collapse", minWidth:320 },
+  th:          { fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:2, textTransform:"uppercase", color:"#94a3b8", padding:"10px 12px", textAlign:"left", borderBottom:"1px solid #f1f5f9", background:"#fafafa", whiteSpace:"nowrap" },
+  td:          { padding:"10px 12px", borderBottom:"1px solid #f8fafc", fontSize:13, verticalAlign:"middle" },
+  rankCell:    { fontFamily:"'Barlow Condensed',sans-serif", fontSize:16, fontWeight:700, width:28, textAlign:"center" },
+  moneyCell:   { fontFamily:"'Barlow Condensed',sans-serif", fontSize:15, fontWeight:700 },
+  ownRow:      { background:"#fff7ed" },
+  avatar:      { width:30, height:30, borderRadius:"50%", background:"#fff7ed", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#f97316", fontWeight:700, flexShrink:0, border:"2px solid #fed7aa" },
+  ownBadge:    { background:"#f97316", color:"#fff", fontSize:9, letterSpacing:1, padding:"2px 6px", borderRadius:4, fontWeight:700 },
+  badge:       { display:"inline-block", fontSize:11, padding:"3px 10px", borderRadius:12, fontWeight:600 },
+  badgeColors: { rich:{background:"#dcfce7",color:"#15803d"}, mid:{background:"#fef9c3",color:"#a16207"}, tight:{background:"#fee2e2",color:"#dc2626"} },
+  boardEvent:  { borderBottom:"1px solid #f1f5f9", padding:"12px 14px" },
+  eventHeader: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 },
+  evType:      { fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:2, textTransform:"uppercase", padding:"3px 8px", borderRadius:4, fontWeight:700 },
+  evTransfer:  { background:"#eff6ff", color:"#3b82f6" },
+  evMarket:    { background:"#fff7ed", color:"#f97316" },
+  evMove:      { background:"#f5f3ff", color:"#7c3aed" },
+  eventItem:   { display:"flex", alignItems:"center", gap:6, fontSize:13, flexWrap:"wrap" },
+  playerTag:   { background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:4, padding:"2px 8px", color:"#1e293b", fontSize:12 },
+  posTag:      { fontSize:10, fontWeight:700, padding:"2px 6px", borderRadius:3, letterSpacing:0.5 },
+  money:       { fontFamily:"'Barlow Condensed',sans-serif", fontSize:14, fontWeight:700 },
+  select:      { background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"8px 12px", color:"#475569", fontSize:13, outline:"none" },
 };
 
 // Add keyframes
