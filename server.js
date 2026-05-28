@@ -24,6 +24,10 @@ const CHECK_EVERY  = parseInt(process.env.CHECK_EVERY  || "300000");  // 5 min
 const TOKEN_FILE   = path.join(__dirname, ".token");
 let cachedToken    = "";
 try { cachedToken = fs.readFileSync(TOKEN_FILE, "utf8").trim(); } catch(e) {}
+// Fallback: variable de entorno (útil en Render donde .token no persiste)
+if (!cachedToken && process.env.BIWENGER_TOKEN) {
+  cachedToken = process.env.BIWENGER_TOKEN.trim();
+}
 
 // ── Alertas ya enviadas (evitar duplicados en la misma sesión) ────────────────
 const alertedSet        = new Set(); // chollos: `${playerId}_${price}_${until}`

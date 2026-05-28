@@ -27,6 +27,14 @@ const OWN_USER_ID  = 13532644;
 const START_BUDGET = 20_000_000;
 const DEFAULT_TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOjI3NDkyMzY3LCJpYXQiOjE3NzE1NzcxMjh9.lszJyow_zzpVI7uAx1ZhYOxNiCS6njTM1LWlk64pPG8";
 
+// ─── SERVER URL (auto-detectado) ─────────────────────────────────────────────
+// En local (localhost) usa rutas relativas → va al server.js local.
+// En GitHub Pages usa la URL de Render → va al servidor en la nube.
+const RENDER_URL = "RENDER_URL_PENDING"; // ← se actualizará con la URL de Render
+const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+  ? ""
+  : RENDER_URL;
+
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 const fmt  = n => n==null ? "—" : `${(n/1_000_000).toFixed(2)}M`;
 const fmtK = n => n==null ? "—" : n>=1_000_000 ? `${(n/1_000_000).toFixed(2)}M` : n>=1000 ? `${(n/1000).toFixed(0)}K` : String(n);
@@ -36,7 +44,7 @@ const balClass = b => b>15_000_000?"rich":b>5_000_000?"mid":"tight";
 
 // ─── API ─────────────────────────────────────────────────────────────────────
 const makeApi = (token, leagueId=LEAGUE_ID) => async (path, opts={}) => {
-  const res = await fetch(`http://localhost:8080${path}`, {
+  const res = await fetch(`${SERVER_URL}${path}`, {
     credentials: "include",
     headers: {
       "Authorization": token,
@@ -101,7 +109,7 @@ async function fetchPlayerMap(api, leagueId) {
   // Strategy 0: cf.biwenger.com competition data — full player list (~1300 jugadores), JSONP
   try {
     tried.push("/cfapi/v2/competitions/world-cup/data (JSONP)");
-    const text = await fetch(`/cfapi/v2/competitions/world-cup/data?lang=en&score=3&callback=BIW_CB`)
+    const text = await fetch(`${SERVER_URL}/cfapi/v2/competitions/world-cup/data?lang=en&score=3&callback=BIW_CB`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); });
     // Strip JSONP wrapper: BIW_CB({...}); → parse inner JSON
     const json = JSON.parse(text.replace(/^[^(]+\(/, "").replace(/\);?\s*$/, ""));
@@ -184,7 +192,7 @@ function App() {
     apiRef.current = makeApi(token);
     // Sincronizar token con el servidor para que las alertas de email funcionen
     if (token && token.length > 20) {
-      fetch("/api-local/token", {
+      fetch(`${SERVER_URL}/api-local/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
@@ -459,7 +467,7 @@ function App() {
           style={{...S.btn, fontSize:11, padding:"5px 12px", background:"#14532d", borderColor:"#15803d", whiteSpace:"nowrap"}}
           title="Comprueba el mercado ahora y envía email si hay chollos"
           onClick={() => {
-            fetch("/api-local/check-market", { method:"POST" })
+            fetch(`${SERVER_URL}/api-local/check-market`, { method:"POST" })
               .then(r => r.json())
               .then(() => alert("Check de mercado iniciado — mira la consola del servidor"))
               .catch(() => alert("Error: asegúrate de que el servidor está corriendo"));
