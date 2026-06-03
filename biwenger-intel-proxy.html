@@ -244,6 +244,12 @@ function App() {
   const extractMembersFromBoard = (events) => {
     const members = {};
     for(const ev of events){
+      if(ev.type === "exchange"){
+        const c = ev.content || {};
+        if(c.from?.id && c.from?.name) members[c.from.id] = { name: c.from.name, icon: c.from.icon || "" };
+        if(c.to?.id   && c.to?.name)   members[c.to.id]   = { name: c.to.name,   icon: c.to.icon   || "" };
+        continue;
+      }
       if(ev.type !== "transfer" && ev.type !== "market") continue;
       for(const c of (Array.isArray(ev.content) ? ev.content : [])){
         if(c.from?.id && c.from?.name) members[c.from.id] = { name: c.from.name, icon: c.from.icon || "" };
@@ -390,11 +396,16 @@ function App() {
 
   const boardDesc = [...board].reverse();
 
-  const filteredBoard = filterUser==="all" ? boardDesc : boardDesc.filter(ev =>
-    (Array.isArray(ev.content) ? ev.content : []).some(c =>
+  const filteredBoard = filterUser==="all" ? boardDesc : boardDesc.filter(ev => {
+    if(ev.type === "exchange"){
+      const c = ev.content || {};
+      const uid = Number(filterUser);
+      return c.from?.id === uid || c.to?.id === uid;
+    }
+    return (Array.isArray(ev.content) ? ev.content : []).some(c =>
       c.from?.id === Number(filterUser) || c.to?.id === Number(filterUser)
-    )
-  );
+    );
+  });
 
   const pName = (c) => {
     const pid  = typeof c.player==="object" ? c.player?.id  : c.player;
@@ -709,13 +720,31 @@ function App() {
             {filteredBoard.map((ev,idx)=>(
               <div key={idx} style={S.boardEvent}>
                 <div style={S.eventHeader}>
-                  <span style={{...S.evType,...(ev.type==="transfer"?S.evTransfer:ev.type==="market"?S.evMarket:S.evMove)}}>
-                    {ev.type==="transfer"?"🔄 Traspaso":ev.type==="market"?"🏪 Mercado":"👟 Movimientos"}
+                  <span style={{...S.evType,...(ev.type==="transfer"?S.evTransfer:ev.type==="market"?S.evMarket:ev.type==="exchange"?S.evExchange:S.evMove)}}>
+                    {ev.type==="transfer"?"🔄 Traspaso":ev.type==="market"?"🏪 Mercado":ev.type==="exchange"?"🔀 Intercambio":"👟 Movimientos"}
                   </span>
                   <span style={{fontSize:12,color:"#475569"}}>{fmtDate(ev.date)}</span>
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                  {(Array.isArray(ev.content) ? ev.content : []).slice(0,6).map((c,ci)=>{
+                  {ev.type==="exchange" && (() => {
+                    const c = ev.content || {};
+                    const offeredNames  = (c.offeredPlayers  ||[]).map(id => playerMap[id]?.name || `#${id}`);
+                    const requestedNames= (c.requestedPlayers||[]).map(id => playerMap[id]?.name || `#${id}`);
+                    return (
+                      <div style={S.eventItem}>
+                        <span style={{fontSize:13,color:"#059669",fontWeight:600}}>{c.from?.name||"?"}</span>
+                        <span style={{color:"#475569",fontSize:11}}>ofrece</span>
+                        <span style={{color:"#64748b",fontSize:12}}>{offeredNames.join(", ")||"jugadores"}</span>
+                        {c.amount > 0 && <><span style={{color:"#475569",fontSize:11}}>+</span><span style={{...S.money,color:"#059669"}}>{fmt(c.amount)}</span></>}
+                        <span style={{color:"#475569",fontSize:14,fontWeight:700}}>⇄</span>
+                        <span style={{fontSize:13,color:"#059669",fontWeight:600}}>{c.to?.name||"?"}</span>
+                        <span style={{color:"#475569",fontSize:11}}>ofrece</span>
+                        <span style={{color:"#64748b",fontSize:12}}>{requestedNames.join(", ")||"jugadores"}</span>
+                        {c.requestedAmount > 0 && <><span style={{color:"#475569",fontSize:11}}>+</span><span style={{...S.money,color:"#059669"}}>{fmt(c.requestedAmount)}</span></>}
+                      </div>
+                    );
+                  })()}
+                  {ev.type!=="exchange" && (Array.isArray(ev.content) ? ev.content : []).slice(0,6).map((c,ci)=>{
                     const name = pName(c);
                     const pos  = pPos(c);
                     const team = pTeam(c);
@@ -864,6 +893,7 @@ function App() {
           <div style={S.statsGrid}>
             {[
               ["🔄 Traspasos",         board.filter(e=>e.type==="transfer").length],
+              ["🔀 Intercambios",      board.filter(e=>e.type==="exchange").length],
               ["🏪 Compras mercado",   board.filter(e=>e.type==="market").length],
               ["👟 Mov. plantilla",    board.filter(e=>e.type==="playerMovements").length],
               ["⚽ Jugadores únicos",  Object.keys(playerMap).length],
@@ -966,6 +996,7 @@ const S = {
   evType:      { fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:2, textTransform:"uppercase", padding:"3px 8px", borderRadius:4, fontWeight:700 },
   evTransfer:  { background:"#eff6ff", color:"#3b82f6" },
   evMarket:    { background:"#fff7ed", color:"#f97316" },
+  evExchange:  { background:"#ecfdf5", color:"#059669" },
   evMove:      { background:"#f5f3ff", color:"#7c3aed" },
   eventItem:   { display:"flex", alignItems:"center", gap:6, fontSize:13, flexWrap:"wrap" },
   playerTag:   { background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:4, padding:"2px 8px", color:"#1e293b", fontSize:12 },
