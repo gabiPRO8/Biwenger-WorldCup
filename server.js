@@ -12,7 +12,7 @@ const PORT = 8080;
 // ── Config (env vars con fallbacks) ──────────────────────────────────────────
 const LEAGUE_ID    = process.env.BIWENGER_LEAGUE_ID    || "2057487";
 const OWN_USER_ID  = process.env.BIWENGER_OWN_USER_ID  || "13532644";
-const ALERT_EMAIL  = process.env.ALERT_EMAIL           || "adderein@adderein.com";
+const ALERT_EMAIL  = process.env.ALERT_EMAIL           || "fabrieliniesta2002@gmail.com";
 const SMTP_HOST    = process.env.SMTP_HOST             || "smtp.gmail.com";
 const SMTP_PORT    = parseInt(process.env.SMTP_PORT    || "587");
 const SMTP_USER    = process.env.SMTP_USER             || "";
