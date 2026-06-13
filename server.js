@@ -4,6 +4,7 @@ const { createProxyMiddleware } = require("http-proxy-middleware");
 const nodemailer = require("nodemailer");
 const path     = require("path");
 const fs       = require("fs");
+const crypto   = require("crypto");
 
 const app  = express();
 const PORT = 8080;
@@ -19,6 +20,13 @@ const SMTP_PASS    = process.env.SMTP_PASS             || "";
 const MIN_DISCOUNT = parseFloat(process.env.MIN_DISCOUNT || "0.10"); // 10% por defecto
 const MIN_PRICE    = parseInt(process.env.MIN_PRICE    || "1000000"); // 1M mínimo
 const CHECK_EVERY  = parseInt(process.env.CHECK_EVERY  || "300000");  // 5 min
+const START_BUDGET = 20_000_000;
+const OWN_USER_ID_NUM = Number(OWN_USER_ID);
+
+// ── Login: dos contraseñas → dos roles ───────────────────────────────────────
+const OWNER_PASSWORD = process.env.OWNER_PASSWORD || "Shemas01";
+const GUEST_PASSWORD = process.env.GUEST_PASSWORD || "mongo";
+const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS || String(30 * 24 * 60 * 60 * 1000)); // 30 días
 
 // ── Token persistente (guardado por la UI cuando el usuario lo cambia) ────────
 const TOKEN_FILE   = path.join(__dirname, ".token");
@@ -27,6 +35,70 @@ try { cachedToken = fs.readFileSync(TOKEN_FILE, "utf8").trim(); } catch(e) {}
 // Fallback: variable de entorno (útil en Render donde .token no persiste)
 if (!cachedToken && process.env.BIWENGER_TOKEN) {
   cachedToken = process.env.BIWENGER_TOKEN.trim();
+}
+
+// ── Secreto de sesión (firma los tokens de login; nunca al repo) ─────────────
+const SESSION_SECRET_FILE = path.join(__dirname, ".session-secret");
+let SESSION_SECRET = process.env.SESSION_SECRET || "";
+if (!SESSION_SECRET) {
+  try { SESSION_SECRET = fs.readFileSync(SESSION_SECRET_FILE, "utf8").trim(); } catch(e) {}
+}
+if (!SESSION_SECRET) {
+  SESSION_SECRET = crypto.randomBytes(32).toString("hex");
+  try { fs.writeFileSync(SESSION_SECRET_FILE, SESSION_SECRET, "utf8"); } catch(e) {}
+}
+
+// ── Helpers de sesión: token firmado (HMAC), viaja en header X-Biw-Session ────
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufB, bufB); // mantiene el coste constante
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function signSession(role) {
+  const exp     = Date.now() + SESSION_TTL_MS;
+  const payload = `${role}.${exp}`;
+  const sig     = crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("hex");
+  return `${payload}.${sig}`;
+}
+
+function verifySession(token) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [role, exp, sig] = parts;
+  if (role !== "owner" && role !== "guest") return null;
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(`${role}.${exp}`).digest("hex");
+  if (!timingSafeEqualStr(sig, expected)) return null;
+  if (Date.now() > Number(exp)) return null;
+  return role;
+}
+
+function requireAuth(role) {
+  return (req, res, next) => {
+    const r = verifySession(req.headers["x-biw-session"]);
+    if (!r) return res.status(401).json({ error: "No autorizado" });
+    if (role && r !== role) return res.status(403).json({ error: "Permiso insuficiente" });
+    req.role = r;
+    next();
+  };
+}
+
+// ── Rate limit básico para /api/login (mitiga fuerza bruta) ──────────────────
+const loginAttempts = new Map(); // ip -> { count, resetAt }
+function loginRateLimited(ip) {
+  const now   = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
+    return false;
+  }
+  entry.count++;
+  return entry.count > 10;
 }
 
 // ── Alertas ya enviadas (evitar duplicados en la misma sesión) ────────────────
@@ -38,31 +110,249 @@ app.use((req, res, next) => {
   res.set({
     "Access-Control-Allow-Origin":  "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-League, X-Version, X-User",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-League, X-Version, X-User, X-Biw-Session",
   });
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-// ── Endpoint local: recibir token desde la UI ─────────────────────────────────
 app.use(express.json());
-app.post("/api-local/token", (req, res) => {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGIN — dos contraseñas, dos roles (owner = yo, guest = amigos)
+// ─────────────────────────────────────────────────────────────────────────────
+app.post("/api/login", (req, res) => {
+  const ip = req.ip || req.connection?.remoteAddress || "unknown";
+  if (loginRateLimited(ip)) {
+    return res.status(429).json({ error: "Demasiados intentos. Inténtalo de nuevo en unos minutos." });
+  }
+  const password = req.body?.password;
+  if (typeof password !== "string" || !password) {
+    return res.status(400).json({ error: "Falta la contraseña" });
+  }
+  let role = null;
+  if (timingSafeEqualStr(password, OWNER_PASSWORD)) role = "owner";
+  else if (timingSafeEqualStr(password, GUEST_PASSWORD)) role = "guest";
+  if (!role) return res.status(401).json({ error: "Contraseña incorrecta" });
+  res.json({ ok: true, role, session: signSession(role) });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DASHBOARD DATA — todo el cálculo de saldos vive en el servidor.
+// El token de Biwenger (cachedToken) NUNCA se envía al navegador.
+// ─────────────────────────────────────────────────────────────────────────────
+async function biwengerFetch(apiPath) {
+  if (!cachedToken) throw new Error("NO_TOKEN");
+  const res = await fetch(`https://biwenger.as.com${apiPath}`, {
+    headers: {
+      "Authorization": cachedToken,
+      "X-League":      LEAGUE_ID,
+      "X-Version":     "630",
+      "X-User":        OWN_USER_ID,
+      "Content-Type":  "application/json",
+      "Origin":        "https://biwenger.as.com",
+      "Referer":       "https://biwenger.as.com/",
+    },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} en ${apiPath}`);
+  const j = await res.json();
+  return j?.data !== undefined ? j.data : j;
+}
+
+async function fetchFullBoard() {
+  const all = [];
+  let offset = 0;
+  const limit = 50;
+  for (let i = 0; i < 60; i++) { // tope de seguridad ~3000 eventos
+    const raw   = await biwengerFetch(`/api/v2/league/${LEAGUE_ID}/board?offset=${offset}&limit=${limit}`);
+    const items = Array.isArray(raw) ? raw : (raw?.board || raw?.events || []);
+    if (!items.length) break;
+    all.push(...items);
+    if (items.length < limit) break;
+    offset += limit;
+  }
+  return all.sort((a, b) => a.date - b.date);
+}
+
+function extractMembersFromBoard(events) {
+  const members = {};
+  for (const ev of events) {
+    if (ev.type === "exchange") {
+      const c = ev.content || {};
+      if (c.from?.id && c.from?.name) members[c.from.id] = { name: c.from.name, icon: c.from.icon || "" };
+      if (c.to?.id   && c.to?.name)   members[c.to.id]   = { name: c.to.name,   icon: c.to.icon   || "" };
+      continue;
+    }
+    if (ev.type !== "transfer" && ev.type !== "market") continue;
+    for (const c of (Array.isArray(ev.content) ? ev.content : [])) {
+      if (c.from?.id && c.from?.name) members[c.from.id] = { name: c.from.name, icon: c.from.icon || "" };
+      if (c.to?.id   && c.to?.name)   members[c.to.id]   = { name: c.to.name,   icon: c.to.icon   || "" };
+    }
+  }
+  return members;
+}
+
+function extractPlayersFromBoard(events) {
+  const map = {};
+  for (const ev of events) {
+    for (const c of (Array.isArray(ev.content) ? ev.content : [])) {
+      const p = c.player;
+      if (p && typeof p === "object" && p.id && p.name) {
+        map[p.id] = { name: p.name, position: p.position, price: p.price };
+      }
+    }
+  }
+  return map;
+}
+
+function calcBalances(events, memberIds) {
+  const bal = {};
+  for (const id of memberIds) bal[id] = START_BUDGET;
+  for (const ev of events) {
+    if (ev.type === "transfer") {
+      for (const c of (Array.isArray(ev.content) ? ev.content : [])) {
+        const amt = c.amount || 0;
+        if (c.from?.id != null && bal[c.from.id] !== undefined) bal[c.from.id] += amt;
+        if (c.to?.id   != null && bal[c.to.id]   !== undefined) bal[c.to.id]   -= amt;
+      }
+    } else if (ev.type === "market") {
+      for (const c of (Array.isArray(ev.content) ? ev.content : [])) {
+        const amt   = c.amount || 0;
+        const buyId = c.to?.id;
+        if (buyId != null && bal[buyId] !== undefined) bal[buyId] -= amt;
+      }
+    } else if (ev.type === "exchange") {
+      const c      = ev.content || {};
+      const amt    = c.amount          || 0;
+      const reqAmt = c.requestedAmount || 0;
+      if (c.from?.id != null && bal[c.from.id] !== undefined) bal[c.from.id] += reqAmt - amt;
+      if (c.to?.id   != null && bal[c.to.id]   !== undefined) bal[c.to.id]   += amt - reqAmt;
+    }
+  }
+  return bal;
+}
+
+let dashboardCache = { data: null, fetchedAt: 0 };
+const DASHBOARD_TTL_MS = 120_000; // 2 minutos — evita martillear la API por cada visita
+
+async function buildDashboardData() {
+  const [home, leagueData, board, market, playerMap] = await Promise.all([
+    biwengerFetch("/api/v2/home").catch(() => ({})),
+    biwengerFetch(`/api/v2/league?include=all,-lastAccess&fields=*,standings,tournaments,group,settings(description)`).catch(() => null),
+    fetchFullBoard(),
+    biwengerFetch("/api/v2/market").catch(() => null),
+    loadPlayerMap().catch(() => ({})),
+  ]);
+
+  const ownUser    = home?.user || {};
+  const ownRealBal = ownUser.balance ?? null;
+
+  const memberMap = {};
+  const standings = leagueData?.standings || [];
+  for (const s of (Array.isArray(standings) ? standings : [])) {
+    memberMap[s.id] = {
+      name:        s.name || `User ${s.id}`,
+      icon:        s.icon || "",
+      teamValue:   s.teamValue ?? null,
+      realBalance: Number(s.id) === OWN_USER_ID_NUM ? ownRealBal : null,
+      position:    s.position ?? null,
+    };
+  }
+  if (!memberMap[OWN_USER_ID_NUM]) {
+    memberMap[OWN_USER_ID_NUM] = { name: ownUser.name || "GabiPRO", icon: ownUser.icon || "", realBalance: ownRealBal };
+  } else {
+    memberMap[OWN_USER_ID_NUM].realBalance = ownRealBal;
+  }
+
+  const boardMembers = extractMembersFromBoard(board);
+  for (const [uid, m] of Object.entries(boardMembers)) {
+    if (!memberMap[uid]) memberMap[uid] = { name: m.name, icon: m.icon, realBalance: null };
+  }
+
+  const merged = { ...extractPlayersFromBoard(board), ...playerMap };
+  for (const s of (market?.sales || [])) {
+    const p = s.player;
+    if (p?.id && p?.name) merged[p.id] = { name: p.name, position: p.position, price: p.price, team: merged[p.id]?.team || null };
+  }
+
+  const memberIds = Object.keys(memberMap).map(Number);
+  const balances  = calcBalances(board, memberIds);
+
+  return { board, members: memberMap, playerMap: merged, balances, marketData: market, ownBalance: ownRealBal, generatedAt: Date.now() };
+}
+
+async function getDashboardData(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && dashboardCache.data && (now - dashboardCache.fetchedAt) < DASHBOARD_TTL_MS) {
+    return dashboardCache.data;
+  }
+  const data = await buildDashboardData();
+  dashboardCache = { data, fetchedAt: now };
+  return data;
+}
+
+// ── Enmascarado para invitados: mi saldo nunca sale, ni se puede recalcular ──
+function maskForGuest(data) {
+  const clone = JSON.parse(JSON.stringify(data));
+  if (clone.balances) clone.balances[OWN_USER_ID_NUM] = null;
+  if (clone.members?.[OWN_USER_ID_NUM]) clone.members[OWN_USER_ID_NUM].realBalance = null;
+  clone.ownBalance = null;
+
+  const involvesOwner = (id) => Number(id) === OWN_USER_ID_NUM;
+  for (const ev of (clone.board || [])) {
+    if (ev.type === "exchange") {
+      const c = ev.content || {};
+      if (involvesOwner(c.from?.id) || involvesOwner(c.to?.id)) {
+        c.amount = null;
+        c.requestedAmount = null;
+        c.amountHidden = true;
+      }
+    } else if (ev.type === "transfer" || ev.type === "market") {
+      for (const c of (Array.isArray(ev.content) ? ev.content : [])) {
+        if (involvesOwner(c.from?.id) || involvesOwner(c.to?.id)) {
+          c.amount = null;
+          c.amountHidden = true;
+        }
+      }
+    }
+  }
+  return clone;
+}
+
+app.get("/api/dashboard", requireAuth(), async (req, res) => {
+  try {
+    const forceRefresh = req.query.refresh === "1" && req.role === "owner";
+    const data = await getDashboardData(forceRefresh);
+    const out  = req.role === "guest" ? maskForGuest(data) : data;
+    res.json({ ok: true, role: req.role, ...out });
+  } catch(e) {
+    const noToken = e.message === "NO_TOKEN";
+    res.status(noToken ? 409 : 502).json({
+      error: noToken ? "El propietario aún no ha configurado el token de Biwenger" : "Error obteniendo datos de Biwenger",
+      detail: e.message,
+    });
+  }
+});
+
+// ── Endpoint local: recibir token desde la UI (solo propietario) ─────────────
+app.post("/api-local/token", requireAuth("owner"), (req, res) => {
   const token = (req.body?.token || "").trim();
   if (!token) return res.status(400).json({ error: "No token" });
   cachedToken = token;
   try { fs.writeFileSync(TOKEN_FILE, token, "utf8"); } catch(e) {}
+  dashboardCache = { data: null, fetchedAt: 0 }; // forzar recarga con el nuevo token
   console.log("🔑 Token actualizado desde la UI");
   res.json({ ok: true });
 });
 
-// ── Endpoint local: forzar check inmediato desde la UI ───────────────────────
-app.post("/api-local/check-market", async (req, res) => {
+// ── Endpoint local: forzar check inmediato desde la UI (solo propietario) ────
+app.post("/api-local/check-market", requireAuth("owner"), async (req, res) => {
   res.json({ ok: true, message: "Check iniciado" });
   await checkMarketAlerts(true);
 });
 
-// ── Endpoint local: estado del sistema de alertas ────────────────────────────
-app.get("/api-local/alert-status", (req, res) => {
+// ── Endpoint local: estado del sistema de alertas (solo propietario) ─────────
+app.get("/api-local/alert-status", requireAuth("owner"), (req, res) => {
   res.json({
     smtpConfigured: !!(SMTP_USER && SMTP_PASS),
     alertEmail:     ALERT_EMAIL,

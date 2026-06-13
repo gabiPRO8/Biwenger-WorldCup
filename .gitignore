@@ -3,6 +3,7 @@ node_modules/
 # Secretos — nunca al repo
 .env
 .token
+.session-secret
 
 # Claude Code — sesiones y memoria local
 .claude/projects/

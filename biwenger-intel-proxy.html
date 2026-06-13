@@ -27,7 +27,6 @@ const { useState, useEffect, useCallback, useRef } = React;
 const LEAGUE_ID    = 2057487;
 const OWN_USER_ID  = 13532644;
 const START_BUDGET = 20_000_000;
-const DEFAULT_TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOjI3NDkyMzY3LCJpYXQiOjE3NzE1NzcxMjh9.lszJyow_zzpVI7uAx1ZhYOxNiCS6njTM1LWlk64pPG8";
 
 // ─── SERVER URL (auto-detectado) ─────────────────────────────────────────────
 // En local (localhost) usa rutas relativas → va al server.js local.
@@ -44,135 +43,141 @@ const fmtDate = ts => new Date(ts*1000).toLocaleDateString("es-ES",{day:"2-digit
 const initials = name => (name||"??").split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
 const balClass = b => b>15_000_000?"rich":b>5_000_000?"mid":"tight";
 
-// ─── API ─────────────────────────────────────────────────────────────────────
-const makeApi = (token, leagueId=LEAGUE_ID) => async (path, opts={}) => {
-  const res = await fetch(`${SERVER_URL}${path}`, {
-    credentials: "include",
-    headers: {
-      "Authorization": token,
-      "Content-Type":  "application/json",
-      "X-League":      String(leagueId),
-      "X-Version":     "630",
-      "X-User":        String(OWN_USER_ID),
-      "Accept":        "application/json, text/plain, */*",
-    },
-    ...opts
-  });
-  if(res.status===304) return null;
-  const contentType = res.headers.get("content-type") || "";
-  if(!res.ok) {
-    const errorBody = contentType.includes("application/json")
-      ? JSON.stringify(await res.json())
-      : (await res.text()).slice(0, 300);
-    const looksLikeHtml = /<(!doctype|html|title)/i.test(errorBody);
-    if(looksLikeHtml) throw new Error(`HTML response → ${path} :: token invalid or expired`);
-    throw new Error(`HTTP ${res.status} → ${path} :: ${errorBody}`);
-  }
-  if(!contentType.includes("application/json")) {
-    const text = (await res.text()).slice(0, 300);
-    const looksLikeHtml = /<(!doctype|html|title)/i.test(text);
-    if(looksLikeHtml) throw new Error(`HTML response → ${path} :: token invalid or expired`);
-    throw new Error(`Non-JSON response → ${path} :: ${text}`);
-  }
-  const j = await res.json();
-  return j.data !== undefined ? j.data : j;
-};
+const LOCK = "🔒";
 
-// ─── CACHE (localStorage) ─────────────────────────────────────────────────────
-const CACHE_KEY_BOARD   = `biw_board_${LEAGUE_ID}`;
-const CACHE_KEY_MEMBERS = `biw_members_${LEAGUE_ID}`;
+// ─── SESIÓN (login) ──────────────────────────────────────────────────────────
+const SESSION_KEY = "biw_session_v1";
 
-const cacheSave = (board, members) => {
+const sessionLoad = () => {
   try {
-    const lastEventDate = board.length > 0 ? Math.max(...board.map(e => e.date)) : 0;
-    localStorage.setItem(CACHE_KEY_BOARD,   JSON.stringify({ board, lastEventDate, savedAt: Date.now() }));
-    localStorage.setItem(CACHE_KEY_MEMBERS, JSON.stringify({ members, savedAt: Date.now() }));
-  } catch(e){ console.warn("Cache write failed:", e); }
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    return s?.session && s?.role ? s : null;
+  } catch(e){ return null; }
 };
+const sessionSave  = (s) => { try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch(e){} };
+const sessionClear = () => { try { localStorage.removeItem(SESSION_KEY); } catch(e){} };
 
-const cacheLoad = () => {
-  try {
-    const b = localStorage.getItem(CACHE_KEY_BOARD);
-    const m = localStorage.getItem(CACHE_KEY_MEMBERS);
-    return { board: b ? JSON.parse(b) : null, members: m ? JSON.parse(m) : null };
-  } catch(e){ return { board: null, members: null }; }
+// ─── CACHE (localStorage) — separada por rol para no filtrar datos del owner ──
+const cacheKey = (role) => `biw_dashboard_${LEAGUE_ID}_${role}`;
+const cacheSave = (role, data) => {
+  try { localStorage.setItem(cacheKey(role), JSON.stringify({ ...data, savedAt: Date.now() })); }
+  catch(e){ console.warn("Cache write failed:", e); }
 };
-
-const cacheClear = () => {
-  localStorage.removeItem(CACHE_KEY_BOARD);
-  localStorage.removeItem(CACHE_KEY_MEMBERS);
+const cacheLoad = (role) => {
+  try {
+    const raw = localStorage.getItem(cacheKey(role));
+    return raw ? JSON.parse(raw) : null;
+  } catch(e){ return null; }
 };
-
-// ─── PLAYER MAPPER ────────────────────────────────────────────────────────────
-async function fetchPlayerMap(api, leagueId) {
-  const map = {};
-  const tried = [];
-
-  // Strategy 0: cf.biwenger.com competition data — full player list (~1300 jugadores), JSONP
+const cacheClearAll = () => {
   try {
-    tried.push("/cfapi/v2/competitions/world-cup/data (JSONP)");
-    const text = await fetch(`${SERVER_URL}/cfapi/v2/competitions/world-cup/data?lang=en&score=3&callback=BIW_CB`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); });
-    // Strip JSONP wrapper: BIW_CB({...}); → parse inner JSON
-    const json = JSON.parse(text.replace(/^[^(]+\(/, "").replace(/\);?\s*$/, ""));
-    const raw = json?.data?.players || json?.players || {};
-    const entries = Array.isArray(raw) ? raw : Object.values(raw);
-    for (const p of entries) {
-      if (!p?.id) continue;
-      map[p.id] = {
-        name:     p.name || p.n  || `#${p.id}`,
-        slug:     p.slug || p.s  || null,
-        position: p.position !== undefined ? p.position : (p.p ?? null),
-        price:    p.price    || p.v  || p.value || null,
-        team:     p.team?.name || p.t?.n || null,
-        teamId:   p.teamID   || p.t?.id || null,
-      };
-    }
-    console.log(`✅ Player map (JSONP): ${Object.keys(map).length} jugadores`);
-  } catch(e) {
-    console.warn("JSONP player fetch failed:", e.message);
-  }
-
-  // Si ya tenemos mapa completo, no hace falta seguir
-  if (Object.keys(map).length > 100) return { map, tried };
-
-  // Strategy 1: market endpoint (player objects con nombres)
-  try {
-    tried.push("/api/v2/market");
-    const mkt = await api("/api/v2/market");
-    const sales = mkt?.sales || mkt?.data?.sales || [];
-    for(const s of sales){
-      const p = s.player;
-      if(p?.id && p?.name) map[p.id] = { name: p.name, position: p.position, price: p.price, team: p.teamID };
-    }
+    localStorage.removeItem(cacheKey("owner"));
+    localStorage.removeItem(cacheKey("guest"));
   } catch(e){}
+};
 
-  // Strategy 2: league/competition players endpoints
-  const playerEndpoints = [
-    `/api/v2/league/${leagueId}/players`,
-    `/api/v2/players?competition=world-cup&limit=500&offset=0`,
-    `/api/v2/competitions/world-cup/players?limit=500`,
-  ];
-  for(const ep of playerEndpoints){
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGIN SCREEN — temática Mundial, ilustración CSS/SVG
+// ─────────────────────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [password, setPassword] = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState(null);
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (!password) return;
+    setLoading(true);
+    setError(null);
     try {
-      tried.push(ep);
-      const data = await api(ep);
-      const players = Array.isArray(data) ? data : (data?.players || data?.data || []);
-      if(players.length > 0){
-        for(const p of players){
-          if(p?.id && p?.name) map[p.id] = { name: p.name, position: p.position, price: p.price, team: p.teamID };
-        }
-        if(Object.keys(map).length > 10) break;
+      const res = await fetch(`${SERVER_URL}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "Contraseña incorrecta");
+        setLoading(false);
+        return;
       }
-    } catch(e){}
-  }
+      const sess = { role: data.role, session: data.session };
+      sessionSave(sess);
+      cacheClearAll(); // empezamos limpio en cada login
+      onLogin(sess);
+    } catch(err) {
+      setError("No se pudo conectar con el servidor. Inténtalo de nuevo.");
+      setLoading(false);
+    }
+  };
 
-  return { map, tried };
+  return (
+    <div style={LS.wrap}>
+      {/* Fondo animado */}
+      <div style={LS.bg}/>
+      <div style={LS.glow}/>
+
+      {/* Confeti / balones flotantes */}
+      {Array.from({length:9}).map((_,i)=>(
+        <div key={i} className={`floatBall fb${i}`} style={LS.ball}>⚽</div>
+      ))}
+      <div className="floatBall fbT" style={{...LS.ball, fontSize:46}}>🏆</div>
+
+      {/* Tarjeta glassmorphism */}
+      <form onSubmit={submit} style={LS.card}>
+        <div style={LS.trophyRing}>
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+            <circle cx="32" cy="32" r="30" stroke="#f97316" strokeWidth="2.5" opacity="0.4"/>
+            <path d="M20 16h24v6a12 12 0 0 1-24 0v-6Z" fill="#facc15"/>
+            <path d="M20 16h-6v4a8 8 0 0 0 8 8" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round"/>
+            <path d="M44 16h6v4a8 8 0 0 1-8 8" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round"/>
+            <rect x="28" y="34" width="8" height="10" fill="#f59e0b"/>
+            <rect x="22" y="44" width="20" height="5" rx="2" fill="#d97706"/>
+            <rect x="25" y="49" width="14" height="4" rx="2" fill="#b45309"/>
+          </svg>
+        </div>
+
+        <div style={LS.kicker}>CAFELITOS MUNDIAL</div>
+        <div style={LS.title}>Biwenger <span style={{color:"#f97316"}}>Intel</span></div>
+        <div style={LS.sub}>Inteligencia de mercado · World Cup Fantasy</div>
+
+        <div style={LS.field}>
+          <span style={LS.fieldIcon}>🔑</span>
+          <input
+            type="password"
+            value={password}
+            onChange={e=>{setPassword(e.target.value); setError(null);}}
+            placeholder="Introduce la contraseña"
+            style={LS.input}
+            autoFocus
+          />
+        </div>
+
+        {error && <div style={LS.error}>⚠ {error}</div>}
+
+        <button type="submit" style={{...LS.btn, opacity:loading?0.7:1}} disabled={loading}>
+          {loading ? "Entrando..." : "Entrar"}
+        </button>
+
+        <div style={LS.foot}>
+          🔒 Acceso protegido · Tus datos viajan cifrados
+        </div>
+      </form>
+
+      <div style={LS.credit}>⚽ Solo para el grupo de amigos · CAFELITOS MUNDIAL</div>
+    </div>
+  );
 }
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
-function App() {
-  const [token, setToken]           = useState(DEFAULT_TOKEN);
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN APP
+// ─────────────────────────────────────────────────────────────────────────────
+function App({ session, onLogout }) {
+  const isGuest     = session.role === "guest";
+  const authHeaders = { "X-Biw-Session": session.session };
+
   const [tab, setTab]               = useState("balances");
   const [loading, setLoading]       = useState(false);
   const [loadStep, setLoadStep]     = useState("");
@@ -180,208 +185,57 @@ function App() {
   const [ownBalance, setOwnBalance] = useState(null);
   const [members, setMembers]       = useState({});
   const [playerMap, setPlayerMap]   = useState({});
-  const [playerEndpoints, setPlayerEndpoints] = useState([]);
   const [board, setBoard]           = useState([]);
   const [balances, setBalances]     = useState({});
   const [marketData, setMarketData] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filterUser, setFilterUser] = useState("all");
   const [selectedMgr, setSelectedMgr] = useState(null);
-  const [cacheInfo, setCacheInfo]   = useState(null); // {savedAt, count, newCount}
+  const [revealedMgr, setRevealedMgr] = useState("");     // invitado: ver 1 saldo
+  const [tokenInput, setTokenInput]   = useState("");     // owner: panel token
+  const [tokenMsg, setTokenMsg]       = useState("");
 
-  const apiRef = useRef(makeApi(token));
-  useEffect(() => {
-    apiRef.current = makeApi(token);
-    // Sincronizar token con el servidor para que las alertas de email funcionen
-    if (token && token.length > 20) {
-      fetch(`${SERVER_URL}/api-local/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      }).catch(() => {});
-    }
-  }, [token]);
-
-  // ── Fetch paginated board (incremental: solo eventos tras sinceDate) ──
-  // La API devuelve eventos newest-first; paramos cuando encontramos eventos ya cacheados.
-  const fetchBoard = async (sinceDate = 0) => {
-    const newEvents = [];
-    let offset = 0;
-    const limit = 16;
-    while(true){
-      setLoadStep(`Tablón... ${sinceDate > 0 ? "actualizando" : "cargando"} offset ${offset}`);
-      const raw = await apiRef.current(`/api/v2/league/${LEAGUE_ID}/board?offset=${offset}&limit=${limit}`);
-      if(!raw) break;
-      const items = Array.isArray(raw) ? raw : (raw.board || raw.events || []);
-      if(!items.length) break;
-      if(sinceDate > 0){
-        newEvents.push(...items.filter(e => e.date > sinceDate));
-        if(items.some(e => e.date <= sinceDate)) break; // llegamos a eventos ya cacheados
-      } else {
-        newEvents.push(...items);
-      }
-      if(items.length < limit) break;
-      offset += limit;
-    }
-    return newEvents;
+  // ── Aplicar un payload de dashboard al estado ──
+  const applyData = (d) => {
+    if (!d) return;
+    setBoard(Array.isArray(d.board) ? d.board : []);
+    setMembers(d.members || {});
+    setPlayerMap(d.playerMap || {});
+    setBalances(d.balances || {});
+    setMarketData(d.marketData || null);
+    setOwnBalance(d.ownBalance ?? null);
   };
 
-  // ── Extract players from board events ──
-  const extractPlayersFromBoard = (events) => {
-    const map = {};
-    for(const ev of events){
-      for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-        const p = c.player;
-        if(p && typeof p === "object" && p.id && p.name){
-          map[p.id] = { name: p.name, position: p.position, price: p.price };
-        }
-      }
-    }
-    return map;
-  };
-
-  // ── Extract members (users) from board from/to fields (solo transfer/market) ──
-  const extractMembersFromBoard = (events) => {
-    const members = {};
-    for(const ev of events){
-      if(ev.type === "exchange"){
-        const c = ev.content || {};
-        if(c.from?.id && c.from?.name) members[c.from.id] = { name: c.from.name, icon: c.from.icon || "" };
-        if(c.to?.id   && c.to?.name)   members[c.to.id]   = { name: c.to.name,   icon: c.to.icon   || "" };
-        continue;
-      }
-      if(ev.type !== "transfer" && ev.type !== "market") continue;
-      for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-        if(c.from?.id && c.from?.name) members[c.from.id] = { name: c.from.name, icon: c.from.icon || "" };
-        if(c.to?.id   && c.to?.name)   members[c.to.id]   = { name: c.to.name,   icon: c.to.icon   || "" };
-      }
-    }
-    return members;
-  };
-
-  // ── Calculate balances ──
-  const calcBalances = (events, memberIds) => {
-    const bal = {};
-    for(const id of memberIds) bal[id] = START_BUDGET;
-    for(const ev of events){
-      if(ev.type === "transfer"){
-        for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-          const amt = c.amount || 0;
-          // from = VENDEDOR (gana), to = COMPRADOR (pierde)
-          if(c.from?.id != null && bal[c.from.id] !== undefined) bal[c.from.id] += amt;
-          if(c.to?.id   != null && bal[c.to.id]   !== undefined) bal[c.to.id]   -= amt;
-        }
-      } else if(ev.type === "market"){
-        for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-          const amt   = c.amount || 0;
-          const buyId = c.to?.id;  // to = COMPRADOR en mercado de pujas
-          if(buyId != null && bal[buyId] !== undefined) bal[buyId] -= amt;
-        }
-      } else if(ev.type === "exchange"){
-        const c = ev.content || {};
-        const amt    = c.amount          || 0; // from paga a to
-        const reqAmt = c.requestedAmount || 0; // to paga a from
-        if(c.from?.id != null && bal[c.from.id] !== undefined) bal[c.from.id] += reqAmt - amt;
-        if(c.to?.id   != null && bal[c.to.id]   !== undefined) bal[c.to.id]   += amt - reqAmt;
-      }
-    }
-    return bal;
-  };
-
-  // ── MAIN LOAD ──
+  // ── MAIN LOAD: una sola llamada a /api/dashboard ──
   const loadAll = useCallback(async (forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      // ── Caché: mostrar datos guardados inmediatamente ──
-      const cached = forceRefresh ? { board: null, members: null } : cacheLoad();
-      const cachedBoard   = cached.board;
-      const cachedMembers = cached.members;
-      const sinceDate = cachedBoard ? (cachedBoard.lastEventDate || 0) : 0;
-
-      if(cachedBoard?.board?.length > 0){
-        setBoard(cachedBoard.board);
-        setCacheInfo({ savedAt: cachedBoard.savedAt, count: cachedBoard.board.length, newCount: null });
+      // Pintar caché del rol al instante
+      if (!forceRefresh) {
+        const cached = cacheLoad(session.role);
+        if (cached) { applyData(cached); setLastUpdated(new Date(cached.savedAt || Date.now())); }
       }
-      if(cachedMembers?.members) setMembers(cachedMembers.members);
 
-      // 1. Home (balance real) + League standings — siempre frescos
-      setLoadStep("Cuenta y liga...");
-      const [home, leagueData] = await Promise.all([
-        apiRef.current("/api/v2/home"),
-        apiRef.current(`/api/v2/league?include=all,-lastAccess&fields=*,standings,tournaments,group,settings(description)`).catch(()=>null),
-      ]);
-      const ownUser    = home?.user || {};
-      const ownRealBal = ownUser.balance ?? null;
-      setOwnBalance(ownRealBal);
+      setLoadStep("Cargando datos...");
+      const qs  = (forceRefresh && !isGuest) ? "?refresh=1" : "";
+      const res = await fetch(`${SERVER_URL}/api/dashboard${qs}`, { headers: authHeaders });
 
-      const memberMap = {};
-      const standings = leagueData?.standings || [];
-      for(const s of (Array.isArray(standings) ? standings : [])){
-        memberMap[s.id] = {
-          name: s.name || `User ${s.id}`,
-          icon: s.icon || "",
-          teamValue:   s.teamValue ?? null,
-          realBalance: s.id === OWN_USER_ID ? ownRealBal : null,
-          position:    s.position ?? null,
-        };
+      if (res.status === 401) { sessionClear(); cacheClearAll(); onLogout(); return; }
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || `Error ${res.status}`);
+        setLoading(false);
+        return;
       }
-      if(!memberMap[OWN_USER_ID]){
-        memberMap[OWN_USER_ID] = { name: ownUser.name || "GabiPRO", icon: ownUser.icon || "i/u/11678731.png", realBalance: ownRealBal };
-      } else {
-        memberMap[OWN_USER_ID].realBalance = ownRealBal;
-      }
-      setMembers({...memberMap});
 
-      // 2. Board incremental: solo eventos nuevos desde sinceDate
-      setLoadStep(sinceDate > 0 ? `Actualizando board desde ${fmtDate(sinceDate)}...` : "Cargando board completo...");
-      const newEvents  = await fetchBoard(sinceDate);
-      const prevEvents = (cachedBoard?.board && !forceRefresh) ? cachedBoard.board : [];
-      // Merge + deduplicar por (date, type) + ordenar
-      const seen = new Set(prevEvents.map(e => `${e.date}_${e.type}`));
-      const fresh = newEvents.filter(e => !seen.has(`${e.date}_${e.type}`));
-      const allBoard = [...prevEvents, ...fresh].sort((a,b) => a.date - b.date);
-      setBoard(allBoard);
-
-      // Fallback member extraction del board
-      const boardMembers = extractMembersFromBoard(allBoard);
-      for(const [uid, m] of Object.entries(boardMembers)){
-        if(!memberMap[uid]) memberMap[uid] = { name: m.name, icon: m.icon, realBalance: null };
-      }
-      setMembers({...memberMap});
-
-      // 3. Player map
-      setLoadStep("Mapeando jugadores...");
-      const boardPlayers = extractPlayersFromBoard(allBoard);
-      const { map: apiPlayers, tried } = await fetchPlayerMap(apiRef.current, LEAGUE_ID);
-      setPlayerEndpoints(tried);
-      const merged = { ...boardPlayers, ...apiPlayers };
-      setPlayerMap(merged);
-
-      // 4. Market
-      setLoadStep("Mercado...");
-      try {
-        const mkt = await apiRef.current("/api/v2/market");
-        setMarketData(mkt);
-        for(const s of (mkt?.sales||[])){
-          const p = s.player;
-          if(p?.id && p?.name) merged[p.id] = { name:p.name, position:p.position, price:p.price };
-        }
-        setPlayerMap({...merged});
-      } catch(e){}
-
-      // 5. Balances estimados
-      const memberIds = Object.keys(memberMap).map(Number);
-      const estimated = calcBalances(allBoard, memberIds);
-      setBalances(estimated);
-
-      // 6. Guardar en caché
-      cacheSave(allBoard, memberMap);
-      setCacheInfo({ savedAt: Date.now(), count: allBoard.length, newCount: fresh.length });
+      applyData(data);
+      cacheSave(session.role, data);
       setLastUpdated(new Date());
       setLoadStep("");
-    } catch(e){
-      setError(e.message);
+    } catch(e) {
+      setError("No se pudo conectar con el servidor. " + (e.message || ""));
     } finally {
       setLoading(false);
     }
@@ -389,7 +243,35 @@ function App() {
 
   useEffect(() => { loadAll(); }, []);
 
+  // ── Owner: actualizar token de Biwenger en el servidor ──
+  const saveToken = async () => {
+    const t = tokenInput.trim();
+    if (!t) return;
+    setTokenMsg("Guardando...");
+    try {
+      const res = await fetch(`${SERVER_URL}/api-local/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ token: t }),
+      });
+      if (res.status === 401) { sessionClear(); cacheClearAll(); onLogout(); return; }
+      if (!res.ok) { setTokenMsg("❌ Error al guardar"); return; }
+      setTokenMsg("✅ Token guardado");
+      setTokenInput("");
+      setTimeout(() => loadAll(true), 400);
+      setTimeout(() => setTokenMsg(""), 3000);
+    } catch(e) {
+      setTokenMsg("❌ Sin conexión");
+    }
+  };
+
+  const logout = () => { sessionClear(); cacheClearAll(); onLogout(); };
+
   // ─── DERIVED ────────────────────────────────────────────────────────────────
+  // ¿Puede el rol actual ver el saldo de este manager?
+  const isOwnerId = (id) => Number(id) === OWN_USER_ID;
+  const canSee    = (id) => !isGuest ? true : (!isOwnerId(id) && Number(id) === Number(revealedMgr));
+
   const sortedMembers = Object.entries(balances)
     .map(([id,bal]) => ({
       id: Number(id),
@@ -398,7 +280,10 @@ function App() {
       balance: bal,
       isOwn: Number(id)===OWN_USER_ID,
     }))
-    .sort((a,b) => b.balance - a.balance);
+    .sort((a,b) => (b.balance ?? -Infinity) - (a.balance ?? -Infinity));
+
+  // Lista de managers seleccionables por el invitado (sin el owner)
+  const revealableMembers = sortedMembers.filter(m => !m.isOwn);
 
   const boardDesc = [...board].reverse();
 
@@ -418,21 +303,22 @@ function App() {
     const pn   = typeof c.player==="object" ? c.player?.name : null;
     return pn || playerMap[pid]?.name || `#${pid}`;
   };
-
   const pPos = (c) => {
     const pid = typeof c.player==="object" ? c.player?.id : c.player;
     return playerMap[pid]?.position || null;
   };
-
   const pTeam = (c) => {
     const pid = typeof c.player==="object" ? c.player?.id : c.player;
     return playerMap[pid]?.team || null;
   };
-
   const posLabel = (p) => ({1:"POR",2:"DEF",3:"MC",4:"DEL"}[p] || "?");
   const posColor = (p) => ({1:"#38bdf8",2:"#4ade80",3:"#facc15",4:"#f97316"}[p] || "#94a3b8");
 
-  const isCors = error && (error.includes("fetch")||error.includes("NetworkError")||error.includes("Failed"));
+  // Render de un importe en el tablón respetando el enmascarado del servidor
+  const moneyOrLock = (val, hidden, color, sign="") => {
+    if (hidden || val == null) return <span style={{color:"#cbd5e1"}}>{LOCK}</span>;
+    return <span style={{...S.money, color}}>{sign}{fmt(val)}</span>;
+  };
 
   // ─── RENDER ─────────────────────────────────────────────────────────────────
   return (
@@ -444,57 +330,62 @@ function App() {
           <div style={S.logo}>Biwenger <span style={{color:"#f97316"}}>Intel</span></div>
           <div style={S.meta}>CAFELITOS MUNDIAL · Liga {LEAGUE_ID} · {Object.keys(members).length} managers · {board.length} eventos</div>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",justifyContent:"flex-end"}}>
-          {cacheInfo && !loading && (
-            <span style={{...S.meta, fontSize:10, lineHeight:"1.4em"}}>
-              {cacheInfo.newCount > 0
-                ? `+${cacheInfo.newCount} nuevos · `
-                : ""}
-              {cacheInfo.count} eventos cacheados
-              {cacheInfo.savedAt
-                ? ` · guardado ${new Date(cacheInfo.savedAt).toLocaleTimeString("es-ES")}`
-                : ""}
-            </span>
-          )}
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          <span style={isGuest ? S.roleGuest : S.roleOwner}>
+            {isGuest ? "👥 Invitado" : "👑 Admin"}
+          </span>
           {lastUpdated && !loading && (
             <span style={S.meta}>actualizado {lastUpdated.toLocaleTimeString("es-ES")}</span>
           )}
-          <button style={S.btn} onClick={() => loadAll(false)} disabled={loading}>
+          <button style={S.btn} onClick={() => loadAll(!isGuest)} disabled={loading}>
             {loading ? `⟳ ${loadStep||"Cargando..."}` : "↻ Actualizar"}
           </button>
-          <button
-            style={{...S.btn, background:"#64748b", fontSize:11}}
-            onClick={() => loadAll(true)}
-            disabled={loading}
-            title="Borrar caché y recargar todo desde la API"
-          >
-            ⟳ Recarga completa
+          <button style={{...S.btn, background:"#64748b", fontSize:11}} onClick={logout} title="Cerrar sesión">
+            ⎋ Salir
           </button>
         </div>
       </div>
 
-      {/* TOKEN BAR */}
-      <div style={S.tokenBar}>
-        <span style={{fontSize:11,color:"#475569",letterSpacing:1,textTransform:"uppercase"}}>🔑 Token</span>
-        <input
-          style={S.tokenInput}
-          value={token}
-          onChange={e=>setToken(e.target.value)}
-          placeholder="Bearer eyJ..."
-        />
-        <button
-          style={{...S.btn, fontSize:11, padding:"5px 12px", background:"#14532d", borderColor:"#15803d", whiteSpace:"nowrap"}}
-          title="Comprueba el mercado ahora y envía email si hay chollos"
-          onClick={() => {
-            fetch(`${SERVER_URL}/api-local/check-market`, { method:"POST" })
-              .then(r => r.json())
-              .then(() => alert("Check de mercado iniciado — mira la consola del servidor"))
-              .catch(() => alert("Error: asegúrate de que el servidor está corriendo"));
-          }}
-        >
-          📧 Test alerta
-        </button>
-      </div>
+      {/* ADMIN BAR (solo owner) */}
+      {!isGuest && (
+        <div style={S.tokenBar}>
+          <span style={{fontSize:11,color:"#475569",letterSpacing:1,textTransform:"uppercase",whiteSpace:"nowrap"}}>🔑 Token API</span>
+          <input
+            style={S.tokenInput}
+            value={tokenInput}
+            onChange={e=>setTokenInput(e.target.value)}
+            placeholder="Pega aquí un Bearer eyJ... nuevo para rotarlo (nunca se muestra)"
+            type="password"
+          />
+          <button
+            style={{...S.btn, fontSize:11, padding:"7px 12px", whiteSpace:"nowrap"}}
+            onClick={saveToken}
+          >
+            Guardar token
+          </button>
+          {tokenMsg && <span style={{fontSize:11,color:"#475569",whiteSpace:"nowrap"}}>{tokenMsg}</span>}
+          <button
+            style={{...S.btn, fontSize:11, padding:"7px 12px", background:"#14532d", whiteSpace:"nowrap"}}
+            title="Comprueba el mercado ahora y envía email si hay chollos"
+            onClick={() => {
+              fetch(`${SERVER_URL}/api-local/check-market`, { method:"POST", headers: authHeaders })
+                .then(r => r.json())
+                .then(() => alert("Check de mercado iniciado — mira la consola del servidor"))
+                .catch(() => alert("Error: asegúrate de que el servidor está corriendo"));
+            }}
+          >
+            📧 Test alerta
+          </button>
+        </div>
+      )}
+
+      {/* Aviso invitado */}
+      {isGuest && (
+        <div style={S.guestBar}>
+          🔒 Modo invitado — los saldos están ocultos. Usa <b>“Ver saldo de”</b> en la pestaña Saldos para revelar uno a uno.
+          El saldo de <b>GabiPRO</b> está protegido y no es visible.
+        </div>
+      )}
 
       {/* TABS */}
       <div style={S.tabBar}>
@@ -506,27 +397,21 @@ function App() {
       <div style={S.content}>
         {loading && <div style={S.loadBar}><div style={S.loadBarInner}/></div>}
 
-        {/* CORS ERROR */}
         {error && (
           <div style={S.errorBox}>
-            <div style={{fontWeight:600,color:"#dc2626",marginBottom:8}}>⚠ {error}</div>
-            {isCors && (
-              <div style={S.corsBox}>
-                <strong style={{color:"#3b82f6"}}>🔒 Error CORS — Soluciones:</strong><br/><br/>
-                <strong>① Extensión (más fácil):</strong> Instala <code style={S.code}>CORS Everywhere</code> en Firefox o <code style={S.code}>Allow CORS</code> en Chrome. Actívala y recarga.<br/><br/>
-                <strong>② Servidor local:</strong> En la carpeta donde está este HTML:<br/>
-                <code style={{...S.code,display:"block",margin:"6px 0",padding:"8px"}}>python -m http.server 8080</code>
-                Luego abre <code style={S.code}>http://localhost:8080/biwenger-intel.html</code><br/><br/>
-                <strong>③ Consola de Biwenger:</strong> Abre biwenger.as.com → F12 → Consola. El token ya está embebido.
-              </div>
-            )}
+            <div style={{fontWeight:600,color:"#dc2626"}}>⚠ {error}</div>
           </div>
         )}
 
         {/* ── TAB SALDOS ── */}
         {tab==="balances" && <>
           <div style={S.statsGrid}>
-            {[
+            {(isGuest ? [
+              ["Managers en liga",     sortedMembers.length,                              "#94a3b8"],
+              ["Saldos visibles",      `${revealedMgr ? 1 : 0} / ${revealableMembers.length}`, "#38bdf8"],
+              ["Saldo de GabiPRO",     "🔒 Protegido",                                     "#f97316"],
+              ["Modo",                 "Invitado",                                         "#60a5fa"],
+            ] : [
               ["Managers en liga",    sortedMembers.length,                              "#94a3b8"],
               ["Tu saldo real (API)", ownBalance!=null ? fmt(ownBalance) : "—",          "#38bdf8"],
               ["Tu saldo estimado",   sortedMembers.find(m=>m.isOwn) ? fmt(sortedMembers.find(m=>m.isOwn).balance) : "—", "#60a5fa"],
@@ -542,13 +427,32 @@ function App() {
               })()],
               ["Saldo más alto rival", sortedMembers.filter(m=>!m.isOwn).length>0 ? fmt(Math.max(...sortedMembers.filter(m=>!m.isOwn).map(m=>m.balance))) : "—", "#4ade80"],
               ["Saldo más bajo rival", sortedMembers.filter(m=>!m.isOwn).length>0 ? fmt(Math.min(...sortedMembers.filter(m=>!m.isOwn).map(m=>m.balance))) : "—", "#f87171"],
-            ].map(([l,v,c])=>(
+            ]).map(([l,v,c])=>(
               <div key={l} style={S.statCard}>
                 <div style={S.statLabel}>{l}</div>
                 <div style={{...S.statValue,color:c}}>{v}</div>
               </div>
             ))}
           </div>
+
+          {/* Selector de revelado (solo invitado) */}
+          {isGuest && (
+            <div style={S.revealBar}>
+              <span style={{fontSize:12,color:"#475569",fontWeight:600}}>👁️ Ver saldo de:</span>
+              <select style={S.select} value={revealedMgr} onChange={e=>setRevealedMgr(e.target.value)}>
+                <option value="">— Ninguno (todos ocultos) —</option>
+                {revealableMembers.map(m=>(
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+              {revealedMgr && (
+                <button style={{...S.btn, fontSize:11, padding:"6px 12px", background:"#64748b"}} onClick={()=>setRevealedMgr("")}>
+                  Ocultar
+                </button>
+              )}
+            </div>
+          )}
+
           <div style={S.sectionTitle}>Clasificación por saldo estimado · {sortedMembers.length} managers</div>
           <div style={S.card}>
             <table style={S.table}>
@@ -560,15 +464,18 @@ function App() {
               <tbody>
                 {sortedMembers.length===0 && !loading && (
                   <tr><td colSpan={9} style={{textAlign:"center",color:"#475569",padding:40}}>
-                    Sin datos — comprueba el token y la conexión
+                    Sin datos — comprueba la conexión
                   </td></tr>
                 )}
                 {sortedMembers.map((m,i) => {
+                  const visible    = canSee(m.id);
+                  const protectedOwn = isGuest && m.isOwn; // saldo propietario: nunca visible para invitado
+
                   let spent=0, earned=0;
                   for(const ev of board){
                     if(ev.type==="transfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-                      if(c.to?.id  ===m.id) spent  += c.amount||0;  // to=comprador
-                      if(c.from?.id===m.id) earned += c.amount||0;  // from=vendedor
+                      if(c.to?.id  ===m.id) spent  += c.amount||0;
+                      if(c.from?.id===m.id) earned += c.amount||0;
                     }
                     if(ev.type==="market") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
                       if(c.to?.id===m.id) spent += c.amount||0;
@@ -581,16 +488,23 @@ function App() {
                       if(c.to?.id===m.id)  { if(amt>reqAmt) earned += amt-reqAmt; else spent += reqAmt-amt; }
                     }
                   }
-                  const delta      = m.balance - START_BUDGET;
-                  const bc         = balClass(m.balance);
+                  const delta      = m.balance!=null ? m.balance - START_BUDGET : null;
+                  const bc         = m.balance!=null ? balClass(m.balance) : "tight";
                   const realMBal   = m.isOwn ? ownBalance : (members[m.id]?.realBalance ?? null);
-                  const diffReal   = realMBal != null ? realMBal - m.balance : null;
+                  const diffReal   = (realMBal != null && m.balance != null) ? realMBal - m.balance : null;
                   const diffColor  = diffReal == null ? "#475569"
                                    : Math.abs(diffReal) < 100_000 ? "#4ade80"
                                    : Math.abs(diffReal) < 500_000 ? "#facc15" : "#f87171";
-                  const isExpanded = selectedMgr === m.id;
+                  const isExpanded = !protectedOwn && visible && selectedMgr === m.id;
 
-                  // Trazabilidad: todas las operaciones de este manager
+                  // Celda de saldo según visibilidad
+                  const lockCell = (txt) => (
+                    <td style={{...S.td,...S.moneyCell}} colSpan={1}>
+                      <span style={{color:"#94a3b8",fontWeight:600,fontSize:12}}>{txt}</span>
+                    </td>
+                  );
+
+                  // Trazabilidad
                   const txs = !isExpanded ? [] : board.flatMap(ev => {
                     if(ev.type==="exchange"){
                       const c = ev.content || {};
@@ -609,7 +523,6 @@ function App() {
                     return (Array.isArray(ev.content) ? ev.content : [])
                       .filter(c => c.from?.id===m.id || c.to?.id===m.id)
                       .map(c => {
-                        // from=VENDEDOR, to=COMPRADOR
                         const isBuy  = ev.type==="market" ? true : c.to?.id===m.id;
                         const pid    = typeof c.player==="object" ? c.player?.id : c.player;
                         const pname  = typeof c.player==="object" ? c.player?.name : (playerMap[pid]?.name || `#${pid}`);
@@ -621,48 +534,76 @@ function App() {
                       });
                   }).sort((a,b)=>b.date-a.date);
 
-                  // Balance running: procesar en orden cronológico (asc), mostrar desc
                   let runBal = START_BUDGET;
                   const txsWithBal = [...txs].reverse().map(tx => {
                     runBal += tx.isBuy ? -tx.amount : tx.amount;
                     return {...tx, balAfter: runBal};
-                  }); // txsWithBal[last].balAfter ≈ m.balance
+                  });
 
                   return (
                     <React.Fragment key={m.id}>
                       <tr
-                        style={{...(m.isOwn?S.ownRow:{}), cursor:"pointer", userSelect:"none"}}
-                        onClick={()=>setSelectedMgr(isExpanded ? null : m.id)}
+                        style={{...(m.isOwn?S.ownRow:{}), cursor:(protectedOwn||!visible)?"default":"pointer", userSelect:"none"}}
+                        onClick={()=> (protectedOwn||!visible) ? null : setSelectedMgr(isExpanded ? null : m.id)}
                       >
                         <td style={{...S.td,...S.rankCell,color:i<3?"#f97316":"#475569"}}>{i+1}</td>
                         <td style={S.td}>
                           <div style={{display:"flex",alignItems:"center",gap:8}}>
                             <div style={{...S.avatar,background:isExpanded?"#f97316":"#fed7aa"}}>{initials(m.name)}</div>
                             <span>{m.name}</span>
-                            {m.isOwn && <span style={S.ownBadge}>TÚ</span>}
-                            <span style={{fontSize:10,color:"#475569"}}>{isExpanded?"▲":"▼"}</span>
+                            {m.isOwn && <span style={S.ownBadge}>{isGuest ? "PROTEGIDO" : "TÚ"}</span>}
+                            {!protectedOwn && visible && <span style={{fontSize:10,color:"#475569"}}>{isExpanded?"▲":"▼"}</span>}
                           </div>
                         </td>
-                        <td style={{...S.td,...S.moneyCell,color:{rich:"#4ade80",mid:"#facc15",tight:"#f87171"}[bc]}}>
-                          {fmt(m.balance)}
-                        </td>
-                        <td style={{...S.td,...S.moneyCell,color:"#f97316"}}>
-                          {realMBal != null ? fmt(realMBal) : <span style={{color:"#cbd5e1"}}>—</span>}
-                        </td>
-                        <td style={{...S.td,...S.moneyCell,color:diffColor}}>
-                          {diffReal == null ? <span style={{color:"#cbd5e1"}}>—</span>
-                            : `${diffReal>=0?"+":""}${fmt(diffReal)}`}
-                        </td>
-                        <td style={S.td}>
-                          <span style={{...S.badge,...S.badgeColors[bc]}}>{
-                            bc==="rich"?"💰 Rico":bc==="mid"?"⚖️ Medio":"🔴 Apurado"
-                          }</span>
-                        </td>
-                        <td style={{...S.td,...S.moneyCell,color:delta>=0?"#4ade80":"#f87171"}}>
-                          {delta>=0?"+":""}{fmt(delta)}
-                        </td>
-                        <td style={{...S.td,...S.moneyCell,color:"#dc2626"}}>-{fmt(spent)}</td>
-                        <td style={{...S.td,...S.moneyCell,color:"#16a34a"}}>+{fmt(earned)}</td>
+
+                        {protectedOwn ? (
+                          <>
+                            <td style={S.td} colSpan={3}>
+                              <span style={S.lockBadge}>🔒 Protegido</span>
+                            </td>
+                            <td style={S.td}>
+                              <span style={S.lockBadge}>🔒</span>
+                            </td>
+                            <td style={S.td} colSpan={3}>
+                              <span style={{color:"#94a3b8",fontSize:12}}>Saldo del propietario oculto</span>
+                            </td>
+                          </>
+                        ) : !visible ? (
+                          <>
+                            <td style={S.td} colSpan={3}>
+                              <span style={S.lockBadge}>🔒 Oculto</span>
+                            </td>
+                            <td style={S.td}>
+                              <span style={S.lockBadge}>🔒</span>
+                            </td>
+                            <td style={S.td} colSpan={3}>
+                              <span style={{color:"#94a3b8",fontSize:12}}>Selecciónalo en “Ver saldo de”</span>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td style={{...S.td,...S.moneyCell,color:{rich:"#4ade80",mid:"#facc15",tight:"#f87171"}[bc]}}>
+                              {fmt(m.balance)}
+                            </td>
+                            <td style={{...S.td,...S.moneyCell,color:"#f97316"}}>
+                              {realMBal != null ? fmt(realMBal) : <span style={{color:"#cbd5e1"}}>—</span>}
+                            </td>
+                            <td style={{...S.td,...S.moneyCell,color:diffColor}}>
+                              {diffReal == null ? <span style={{color:"#cbd5e1"}}>—</span>
+                                : `${diffReal>=0?"+":""}${fmt(diffReal)}`}
+                            </td>
+                            <td style={S.td}>
+                              <span style={{...S.badge,...S.badgeColors[bc]}}>{
+                                bc==="rich"?"💰 Rico":bc==="mid"?"⚖️ Medio":"🔴 Apurado"
+                              }</span>
+                            </td>
+                            <td style={{...S.td,...S.moneyCell,color:delta>=0?"#4ade80":"#f87171"}}>
+                              {delta>=0?"+":""}{fmt(delta)}
+                            </td>
+                            <td style={{...S.td,...S.moneyCell,color:"#dc2626"}}>-{fmt(spent)}</td>
+                            <td style={{...S.td,...S.moneyCell,color:"#16a34a"}}>+{fmt(earned)}</td>
+                          </>
+                        )}
                       </tr>
                       {isExpanded && (
                         <tr>
@@ -761,12 +702,12 @@ function App() {
                         <span style={{fontSize:13,color:"#059669",fontWeight:600}}>{c.from?.name||"?"}</span>
                         <span style={{color:"#475569",fontSize:11}}>ofrece</span>
                         <span style={{color:"#64748b",fontSize:12}}>{offeredNames.join(", ")||"jugadores"}</span>
-                        {c.amount > 0 && <><span style={{color:"#475569",fontSize:11}}>+</span><span style={{...S.money,color:"#059669"}}>{fmt(c.amount)}</span></>}
+                        {(c.amountHidden || c.amount > 0) && <><span style={{color:"#475569",fontSize:11}}>+</span>{moneyOrLock(c.amount, c.amountHidden, "#059669")}</>}
                         <span style={{color:"#475569",fontSize:14,fontWeight:700}}>⇄</span>
                         <span style={{fontSize:13,color:"#059669",fontWeight:600}}>{c.to?.name||"?"}</span>
                         <span style={{color:"#475569",fontSize:11}}>ofrece</span>
                         <span style={{color:"#64748b",fontSize:12}}>{requestedNames.join(", ")||"jugadores"}</span>
-                        {c.requestedAmount > 0 && <><span style={{color:"#475569",fontSize:11}}>+</span><span style={{...S.money,color:"#059669"}}>{fmt(c.requestedAmount)}</span></>}
+                        {(c.amountHidden || c.requestedAmount > 0) && <><span style={{color:"#475569",fontSize:11}}>+</span>{moneyOrLock(c.requestedAmount, c.amountHidden, "#059669")}</>}
                       </div>
                     );
                   })()}
@@ -778,7 +719,7 @@ function App() {
                       <div key={ci} style={S.eventItem}>
                         {pos && <span style={{...S.posTag,background:posColor(pos)+"22",color:posColor(pos),border:`1px solid ${posColor(pos)}44`}}>{posLabel(pos)}</span>}
                         <span style={S.playerTag}>⚽ {name}{team && <span style={{marginLeft:4,fontSize:10,color:"#94a3b8",fontWeight:400}}>{team}</span>}</span>
-                        <span style={{...S.money,color:"#dc2626"}}>-{fmt(c.amount)}</span>
+                        {moneyOrLock(c.amount, c.amountHidden, "#dc2626", "-")}
                         <span style={{color:"#475569",fontSize:11}}>←</span>
                         <span style={{fontSize:13,color:"#94a3b8"}}>{c.from?.name||"Mercado"}</span>
                         {c.to && <><span style={{color:"#475569",fontSize:11}}>→</span><span style={{fontSize:13,color:"#94a3b8"}}>{c.to.name}</span></>}
@@ -789,7 +730,7 @@ function App() {
                       <div key={ci} style={S.eventItem}>
                         {pos && <span style={{...S.posTag,background:posColor(pos)+"22",color:posColor(pos),border:`1px solid ${posColor(pos)}44`}}>{posLabel(pos)}</span>}
                         <span style={S.playerTag}>⚽ {name}{team && <span style={{marginLeft:4,fontSize:10,color:"#94a3b8",fontWeight:400}}>{team}</span>}</span>
-                        <span style={{...S.money,color:"#dc2626"}}>-{fmt(c.amount)}</span>
+                        {moneyOrLock(c.amount, c.amountHidden, "#dc2626", "-")}
                         <span style={{color:"#475569",fontSize:11}}>→</span>
                         <span style={{fontSize:13,color:"#94a3b8"}}>{c.to?.name||members[c.to?.id]?.name||`User ${c.to?.id}`}</span>
                       </div>
@@ -820,7 +761,7 @@ function App() {
                 </div>
                 <div style={S.statCard}>
                   <div style={S.statLabel}>Tu saldo</div>
-                  <div style={{...S.statValue,color:"#f97316"}}>{fmt(ownBalance)}</div>
+                  <div style={{...S.statValue,color:"#f97316"}}>{isGuest ? "🔒" : fmt(ownBalance)}</div>
                 </div>
               </div>
               <div style={S.card}>
@@ -853,11 +794,15 @@ function App() {
                           <td style={{...S.td,fontSize:13,color:"#94a3b8"}}>{seller}</td>
                           <td style={{...S.td,fontSize:12,color:"#64748b"}}>{expires}</td>
                           <td style={S.td}>
-                            <span style={{padding:"3px 10px",borderRadius:4,fontSize:11,fontWeight:700,
-                              background:canBuy?"#dcfce7":"#fee2e2",
-                              color:canBuy?"#16a34a":"#dc2626"}}>
-                              {canBuy?"✓ Sí":"✗ No"}
-                            </span>
+                            {isGuest ? (
+                              <span style={S.lockBadge}>🔒</span>
+                            ) : (
+                              <span style={{padding:"3px 10px",borderRadius:4,fontSize:11,fontWeight:700,
+                                background:canBuy?"#dcfce7":"#fee2e2",
+                                color:canBuy?"#16a34a":"#dc2626"}}>
+                                {canBuy?"✓ Sí":"✗ No"}
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );
@@ -873,19 +818,6 @@ function App() {
         {tab==="players" && <>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
             <div style={S.sectionTitle}>{Object.keys(playerMap).length} jugadores mapeados</div>
-          </div>
-          <div style={{...S.corsBox,marginBottom:20}}>
-            <strong style={{color:"#3b82f6"}}>🔍 Estado del mapeo de jugadores</strong><br/><br/>
-            <strong>Fuentes probadas:</strong><br/>
-            {playerEndpoints.map((ep,i)=>(
-              <div key={i} style={{fontSize:12,marginTop:4}}>
-                <code style={S.code}>{ep}</code>
-              </div>
-            ))}<br/>
-            <strong>Resultado:</strong> {Object.keys(playerMap).length} jugadores con nombre.<br/>
-            <strong>IDs sin nombre:</strong> Se verán como <code style={S.code}>#ID</code> en el tablón.<br/><br/>
-            <strong>💡 Siguiente paso:</strong> Con los IDs del tablón podemos buscar en SofaScore/FBref.
-            Endpoint a investigar: <code style={S.code}>GET /api/v2/players/[ID]</code> (ejecutar desde la consola de biwenger.as.com)
           </div>
           <div style={S.card}>
             <table style={S.table}>
@@ -905,7 +837,7 @@ function App() {
                 ))}
                 {Object.keys(playerMap).length===0 && (
                   <tr><td colSpan={4} style={{textAlign:"center",color:"#475569",padding:32}}>
-                    Sin jugadores mapeados aún — los IDs del tablón sin nombre se mostrarán cuando actualices
+                    Sin jugadores mapeados aún — actualiza para cargarlos
                   </td></tr>
                 )}
               </tbody>
@@ -947,11 +879,12 @@ function App() {
               </thead>
               <tbody>
                 {sortedMembers.map(m=>{
+                  const protectedOwn = isGuest && m.isOwn;
                   let spent=0, earned=0, ops=0;
                   for(const ev of board){
                     if(ev.type==="transfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-                      if(c.to?.id  ===m.id){spent +=c.amount||0;ops++;}  // to=comprador
-                      if(c.from?.id===m.id) earned+=c.amount||0;          // from=vendedor
+                      if(c.to?.id  ===m.id){spent +=c.amount||0;ops++;}
+                      if(c.from?.id===m.id) earned+=c.amount||0;
                     }
                     if(ev.type==="market") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
                       if(c.to?.id===m.id){spent+=c.amount||0;ops++;}
@@ -964,13 +897,19 @@ function App() {
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <div style={S.avatar}>{initials(m.name)}</div>
                           {m.name}
-                          {m.isOwn && <span style={S.ownBadge}>TÚ</span>}
+                          {m.isOwn && <span style={S.ownBadge}>{isGuest ? "PROTEGIDO" : "TÚ"}</span>}
                         </div>
                       </td>
-                      <td style={{...S.td,textAlign:"center"}}>{ops}</td>
-                      <td style={{...S.td,...S.moneyCell,color:"#dc2626"}}>-{fmt(spent)}</td>
-                      <td style={{...S.td,...S.moneyCell,color:"#16a34a"}}>+{fmt(earned)}</td>
-                      <td style={{...S.td,...S.moneyCell,color:net>=0?"#4ade80":"#f87171"}}>{net>=0?"+":""}{fmt(net)}</td>
+                      {protectedOwn ? (
+                        <td style={S.td} colSpan={4}><span style={S.lockBadge}>🔒 Protegido</span></td>
+                      ) : (
+                        <>
+                          <td style={{...S.td,textAlign:"center"}}>{ops}</td>
+                          <td style={{...S.td,...S.moneyCell,color:"#dc2626"}}>-{fmt(spent)}</td>
+                          <td style={{...S.td,...S.moneyCell,color:"#16a34a"}}>+{fmt(earned)}</td>
+                          <td style={{...S.td,...S.moneyCell,color:net>=0?"#4ade80":"#f87171"}}>{net>=0?"+":""}{fmt(net)}</td>
+                        </>
+                      )}
                     </tr>
                   );
                 })}
@@ -983,6 +922,15 @@ function App() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOT — decide entre login y app
+// ─────────────────────────────────────────────────────────────────────────────
+function Root() {
+  const [session, setSession] = useState(() => sessionLoad());
+  if (!session) return <LoginScreen onLogin={setSession} />;
+  return <App session={session} onLogout={() => setSession(null)} />;
+}
+
 // ─── STYLES ──────────────────────────────────────────────────────────────────
 const S = {
   app:         { fontFamily:"'Barlow',sans-serif", background:"#f8fafc", color:"#1e293b", minHeight:"100vh" },
@@ -990,8 +938,11 @@ const S = {
   logo:        { fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:800, letterSpacing:2, color:"#1e293b", textTransform:"uppercase" },
   meta:        { fontSize:11, color:"#94a3b8", marginTop:2 },
   btn:         { background:"#f97316", color:"#fff", border:"none", padding:"9px 16px", borderRadius:8, cursor:"pointer", fontFamily:"'Barlow',sans-serif", fontSize:13, fontWeight:600, minHeight:38, touchAction:"manipulation" },
-  tokenBar:    { background:"#fff", borderBottom:"1px solid #e2e8f0", padding:"8px 16px", display:"flex", alignItems:"center", gap:8 },
-  tokenInput:  { flex:1, background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"8px 10px", color:"#475569", fontSize:11, fontFamily:"monospace", outline:"none", minWidth:0 },
+  roleOwner:   { background:"#fef3c7", color:"#b45309", fontSize:11, fontWeight:700, padding:"5px 12px", borderRadius:20, border:"1px solid #fcd34d", whiteSpace:"nowrap" },
+  roleGuest:   { background:"#e0f2fe", color:"#0369a1", fontSize:11, fontWeight:700, padding:"5px 12px", borderRadius:20, border:"1px solid #7dd3fc", whiteSpace:"nowrap" },
+  tokenBar:    { background:"#fffbeb", borderBottom:"1px solid #fde68a", padding:"8px 16px", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" },
+  tokenInput:  { flex:1, background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"8px 10px", color:"#475569", fontSize:11, fontFamily:"monospace", outline:"none", minWidth:120 },
+  guestBar:    { background:"#eff6ff", borderBottom:"1px solid #bfdbfe", padding:"10px 16px", fontSize:12, color:"#1d4ed8", lineHeight:1.5 },
   tabBar:      { display:"flex", gap:0, background:"#fff", borderBottom:"2px solid #f1f5f9", overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none" },
   tab:         { fontFamily:"'Barlow Condensed',sans-serif", fontSize:12, letterSpacing:1, textTransform:"uppercase", padding:"13px 14px", cursor:"pointer", color:"#94a3b8", borderBottom:"3px solid transparent", fontWeight:700, whiteSpace:"nowrap", flexShrink:0, touchAction:"manipulation" },
   tabActive:   { color:"#f97316", borderBottomColor:"#f97316" },
@@ -999,7 +950,6 @@ const S = {
   loadBar:     { height:3, background:"#fed7aa", borderRadius:3, overflow:"hidden", marginBottom:20 },
   loadBarInner:{ height:"100%", width:"40%", background:"linear-gradient(90deg,#f97316,#fb923c)", animation:"slide 1s ease-in-out infinite", borderRadius:3 },
   errorBox:    { background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, padding:14, marginBottom:14 },
-  corsBox:     { background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:10, padding:14, color:"#1d4ed8", fontSize:13, lineHeight:1.8, marginBottom:14 },
   code:        { background:"#f1f5f9", padding:"2px 6px", borderRadius:4, fontFamily:"monospace", fontSize:11, color:"#334155" },
   sectionTitle:{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:3, textTransform:"uppercase", color:"#94a3b8", marginBottom:14 },
   statsGrid:   { display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10, marginBottom:18 },
@@ -1015,8 +965,10 @@ const S = {
   ownRow:      { background:"#fff7ed" },
   avatar:      { width:30, height:30, borderRadius:"50%", background:"#fff7ed", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#f97316", fontWeight:700, flexShrink:0, border:"2px solid #fed7aa" },
   ownBadge:    { background:"#f97316", color:"#fff", fontSize:9, letterSpacing:1, padding:"2px 6px", borderRadius:4, fontWeight:700 },
+  lockBadge:   { display:"inline-block", background:"#f1f5f9", color:"#64748b", fontSize:11, padding:"3px 10px", borderRadius:12, fontWeight:700, border:"1px solid #e2e8f0" },
   badge:       { display:"inline-block", fontSize:11, padding:"3px 10px", borderRadius:12, fontWeight:600 },
   badgeColors: { rich:{background:"#dcfce7",color:"#15803d"}, mid:{background:"#fef9c3",color:"#a16207"}, tight:{background:"#fee2e2",color:"#dc2626"} },
+  revealBar:   { display:"flex", alignItems:"center", gap:10, marginBottom:16, padding:"12px 14px", background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:12, flexWrap:"wrap" },
   boardEvent:  { borderBottom:"1px solid #f1f5f9", padding:"12px 14px" },
   eventHeader: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 },
   evType:      { fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:2, textTransform:"uppercase", padding:"3px 8px", borderRadius:4, fontWeight:700 },
@@ -1028,15 +980,52 @@ const S = {
   playerTag:   { background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:4, padding:"2px 8px", color:"#1e293b", fontSize:12 },
   posTag:      { fontSize:10, fontWeight:700, padding:"2px 6px", borderRadius:3, letterSpacing:0.5 },
   money:       { fontFamily:"'Barlow Condensed',sans-serif", fontSize:14, fontWeight:700 },
-  select:      { background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"8px 12px", color:"#475569", fontSize:13, outline:"none" },
+  select:      { background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"8px 12px", color:"#475569", fontSize:13, outline:"none" },
 };
 
-// Add keyframes
+// ─── ESTILOS LOGIN ───────────────────────────────────────────────────────────
+const LS = {
+  wrap:    { position:"relative", minHeight:"100vh", width:"100%", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", overflow:"hidden", padding:20 },
+  bg:      { position:"absolute", inset:0, background:"linear-gradient(135deg,#0f172a 0%,#1e3a8a 35%,#7c2d12 100%)", backgroundSize:"300% 300%", animation:"gradShift 14s ease infinite", zIndex:0 },
+  glow:    { position:"absolute", top:"-20%", left:"50%", transform:"translateX(-50%)", width:600, height:600, background:"radial-gradient(circle,rgba(249,115,22,.35),transparent 60%)", filter:"blur(40px)", zIndex:0, pointerEvents:"none" },
+  ball:    { position:"absolute", fontSize:30, zIndex:1, opacity:0.85, userSelect:"none", pointerEvents:"none", filter:"drop-shadow(0 4px 8px rgba(0,0,0,.3))" },
+  card:    { position:"relative", zIndex:2, width:"100%", maxWidth:380, background:"rgba(255,255,255,0.10)", backdropFilter:"blur(16px)", WebkitBackdropFilter:"blur(16px)", border:"1px solid rgba(255,255,255,0.25)", borderRadius:24, padding:"36px 28px 28px", boxShadow:"0 20px 60px rgba(0,0,0,.45)", textAlign:"center" },
+  trophyRing:{ width:80, height:80, margin:"0 auto 14px", borderRadius:"50%", background:"rgba(255,255,255,0.12)", display:"flex", alignItems:"center", justifyContent:"center", border:"1px solid rgba(255,255,255,0.3)", animation:"pulseRing 3s ease-in-out infinite" },
+  kicker:  { fontFamily:"'Barlow Condensed',sans-serif", fontSize:11, letterSpacing:4, textTransform:"uppercase", color:"#fdba74", marginBottom:4 },
+  title:   { fontFamily:"'Barlow Condensed',sans-serif", fontSize:38, fontWeight:800, letterSpacing:2, color:"#fff", textTransform:"uppercase", lineHeight:1 },
+  sub:     { fontSize:13, color:"rgba(255,255,255,0.7)", marginTop:6, marginBottom:24 },
+  field:   { display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,0.14)", border:"1px solid rgba(255,255,255,0.3)", borderRadius:12, padding:"4px 12px", marginBottom:14 },
+  fieldIcon:{ fontSize:16 },
+  input:   { flex:1, background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:15, padding:"12px 4px", fontFamily:"'Barlow',sans-serif" },
+  error:   { background:"rgba(239,68,68,0.18)", border:"1px solid rgba(248,113,113,0.5)", color:"#fecaca", fontSize:13, padding:"8px 12px", borderRadius:10, marginBottom:14 },
+  btn:     { width:"100%", background:"linear-gradient(135deg,#f97316,#fb923c)", color:"#fff", border:"none", padding:"14px", borderRadius:12, cursor:"pointer", fontSize:16, fontWeight:700, fontFamily:"'Barlow',sans-serif", letterSpacing:1, boxShadow:"0 8px 24px rgba(249,115,22,.4)", transition:"transform .1s" },
+  foot:    { fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:18 },
+  credit:  { position:"relative", zIndex:2, marginTop:22, fontSize:12, color:"rgba(255,255,255,0.6)", textAlign:"center" },
+};
+
+// ─── KEYFRAMES + animaciones del login ───────────────────────────────────────
 const style = document.createElement("style");
-style.textContent = `@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}`;
+style.textContent = `
+@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+@keyframes gradShift{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+@keyframes pulseRing{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,.5)}50%{box-shadow:0 0 0 14px rgba(249,115,22,0)}}
+@keyframes floatY{0%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-28px) rotate(180deg)}100%{transform:translateY(0) rotate(360deg)}}
+.floatBall{animation:floatY linear infinite}
+.fb0{top:12%;left:8%;animation-duration:9s}
+.fb1{top:22%;right:10%;animation-duration:11s}
+.fb2{bottom:18%;left:14%;animation-duration:8s}
+.fb3{bottom:12%;right:16%;animation-duration:12s}
+.fb4{top:46%;left:4%;animation-duration:10s}
+.fb5{top:60%;right:6%;animation-duration:9.5s}
+.fb6{top:8%;left:46%;animation-duration:13s}
+.fb7{bottom:8%;left:42%;animation-duration:10.5s}
+.fb8{top:38%;right:38%;animation-duration:14s;opacity:.5}
+.fbT{top:16%;right:30%;animation:floatY 16s linear infinite}
+@media(min-width:640px){.statsGrid{grid-template-columns:repeat(3,1fr)}}
+`;
 document.head.appendChild(style);
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
 </script>
 </body>
 </html>
