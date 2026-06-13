@@ -277,6 +277,12 @@ function App() {
           const buyId = c.to?.id;  // to = COMPRADOR en mercado de pujas
           if(buyId != null && bal[buyId] !== undefined) bal[buyId] -= amt;
         }
+      } else if(ev.type === "exchange"){
+        const c = ev.content || {};
+        const amt    = c.amount          || 0; // from paga a to
+        const reqAmt = c.requestedAmount || 0; // to paga a from
+        if(c.from?.id != null && bal[c.from.id] !== undefined) bal[c.from.id] += reqAmt - amt;
+        if(c.to?.id   != null && bal[c.to.id]   !== undefined) bal[c.to.id]   += amt - reqAmt;
       }
     }
     return bal;
@@ -567,6 +573,13 @@ function App() {
                     if(ev.type==="market") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
                       if(c.to?.id===m.id) spent += c.amount||0;
                     }
+                    if(ev.type==="exchange"){
+                      const c = ev.content || {};
+                      const amt    = c.amount          || 0;
+                      const reqAmt = c.requestedAmount || 0;
+                      if(c.from?.id===m.id){ if(reqAmt>amt) earned += reqAmt-amt; else spent += amt-reqAmt; }
+                      if(c.to?.id===m.id)  { if(amt>reqAmt) earned += amt-reqAmt; else spent += reqAmt-amt; }
+                    }
                   }
                   const delta      = m.balance - START_BUDGET;
                   const bc         = balClass(m.balance);
@@ -579,6 +592,19 @@ function App() {
 
                   // Trazabilidad: todas las operaciones de este manager
                   const txs = !isExpanded ? [] : board.flatMap(ev => {
+                    if(ev.type==="exchange"){
+                      const c = ev.content || {};
+                      if(c.from?.id!==m.id && c.to?.id!==m.id) return [];
+                      const amt    = c.amount          || 0;
+                      const reqAmt = c.requestedAmount || 0;
+                      const net    = c.from?.id===m.id ? (reqAmt - amt) : (amt - reqAmt);
+                      if(net===0) return [];
+                      const contra = c.from?.id===m.id ? (c.to?.name||"?") : (c.from?.name||"?");
+                      const offeredNames   = (c.offeredPlayers  ||[]).map(id => playerMap[id]?.name || `#${id}`);
+                      const requestedNames = (c.requestedPlayers||[]).map(id => playerMap[id]?.name || `#${id}`);
+                      const pname = c.from?.id===m.id ? offeredNames.join(", ") : requestedNames.join(", ");
+                      return [{ date: ev.date, pname: pname||"Intercambio", pteam: null, amount: Math.abs(net), isBuy: net<0, contra, txType: "exchange" }];
+                    }
                     if(ev.type !== "transfer" && ev.type !== "market") return [];
                     return (Array.isArray(ev.content) ? ev.content : [])
                       .filter(c => c.from?.id===m.id || c.to?.id===m.id)
