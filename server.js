@@ -104,6 +104,8 @@ function loginRateLimited(ip) {
 // ── Alertas ya enviadas (evitar duplicados en la misma sesión) ────────────────
 const alertedSet        = new Set(); // chollos: `${playerId}_${price}_${until}`
 const spanishAlertedSet = new Set(); // españoles: `${playerId}_${until}`
+const saleAlertedSet    = new Set(); // puestas en venta: `${playerId}_${user}_${until}`
+let   salePrimed        = false;     // 1ª pasada solo "siembra" (no spamea con el mercado actual)
 
 // ── CORS headers on every response ───────────────────────────────────────────
 app.use((req, res, next) => {
@@ -481,6 +483,7 @@ async function checkMarketAlerts(forced = false) {
 
   const bargains = [];
   const spanishPlayers = [];
+  const newSales = [];
 
   for (const s of sales) {
     const pid         = s.player?.id || s.player;
@@ -502,6 +505,15 @@ async function checkMarketAlerts(forced = false) {
       }
     }
 
+    // ── Alerta: alguien (un manager) ha puesto un jugador en venta ──
+    if (s.user != null) {
+      const saleKey = `${pid}_${s.user}_${s.until}`;
+      if (!saleAlertedSet.has(saleKey)) {
+        saleAlertedSet.add(saleKey);
+        newSales.push({ name, team, salePrice, marketPrice, seller, until });
+      }
+    }
+
     // ── Alerta chollos (>1M y descuento ≥ umbral) ──
     if (marketPrice >= MIN_PRICE) {
       const discount = (marketPrice - salePrice) / marketPrice;
@@ -515,7 +527,17 @@ async function checkMarketAlerts(forced = false) {
     }
   }
 
-  console.log(`[Alert] Revisados ${sales.length} jugadores → ${spanishPlayers.length} españoles nuevos, ${bargains.length} chollos nuevos`);
+  console.log(`[Alert] Revisados ${sales.length} jugadores → ${newSales.length} en venta nuevas, ${spanishPlayers.length} españoles nuevos, ${bargains.length} chollos nuevos`);
+
+  // ── Email cada vez que alguien pone un jugador en venta ──
+  // La 1ª pasada solo "siembra" el set para no enviar el mercado entero al arrancar.
+  if (!salePrimed) {
+    salePrimed = true;
+    console.log(`[Alert] Sembrado inicial: ${saleAlertedSet.size} ventas ya en el mercado (no se notifican)`);
+  } else if (newSales.length > 0) {
+    try { await sendSaleAlertEmail(newSales); }
+    catch(e) { console.error("[Alert] Error email ventas:", e.message); }
+  }
 
   if (spanishPlayers.length > 0) {
     try { await sendSpanishAlertEmail(spanishPlayers); }
@@ -525,6 +547,47 @@ async function checkMarketAlerts(forced = false) {
     try { await sendAlertEmail(bargains); }
     catch(e) { console.error("[Alert] Error email chollos:", e.message); }
   }
+}
+
+async function sendSaleAlertEmail(players) {
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_PORT === 465,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  });
+  const fmt  = (n) => n ? (n / 1_000_000).toFixed(2) + "M" : "—";
+  const rows = players.map(p => `
+    <tr>
+      <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0">🏷️ <strong>${p.name}</strong>${p.team ? `<br><span style="font-size:11px;color:#94a3b8">${p.team}</span>` : ""}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;color:#2563eb;font-weight:700">€${fmt(p.salePrice)}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;color:#64748b">€${fmt(p.marketPrice)}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#64748b">${p.seller}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#94a3b8">${p.until}</td>
+    </tr>`).join("");
+
+  await transporter.sendMail({
+    from:    `"Biwenger Intel" <${SMTP_USER}>`,
+    to:      ALERT_EMAIL,
+    subject: `🏷️ ${players.length} jugador${players.length > 1 ? "es" : ""} puesto${players.length > 1 ? "s" : ""} en venta — CAFELITOS MUNDIAL`,
+    html: `
+      <div style="font-family:sans-serif;max-width:700px;margin:0 auto">
+        <h2 style="color:#2563eb;margin-bottom:4px">🏷️ Nuevas puestas en venta</h2>
+        <p style="color:#64748b;margin-top:0">CAFELITOS MUNDIAL · ${new Date().toLocaleString("es-ES")}</p>
+        <table style="border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.1)">
+          <thead>
+            <tr style="background:#eff6ff">
+              <th style="padding:10px 14px;text-align:left">Jugador</th>
+              <th style="padding:10px 14px;text-align:left">Precio venta</th>
+              <th style="padding:10px 14px;text-align:left">Valor mercado</th>
+              <th style="padding:10px 14px;text-align:left">Vendedor</th>
+              <th style="padding:10px 14px;text-align:left">Expira</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <p style="color:#94a3b8;font-size:11px;margin-top:16px">Biwenger Intel · CAFELITOS MUNDIAL</p>
+      </div>`,
+  });
+  console.log(`[Alert] 🏷️ Email de ventas enviado: ${players.map(p=>p.name).join(", ")}`);
 }
 
 async function sendSpanishAlertEmail(players) {

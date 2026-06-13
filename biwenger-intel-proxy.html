@@ -172,6 +172,38 @@ function LoginScreen({ onLogin }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// KICKED SCREEN — invitado expulsado tras el show de 5 s
+// ─────────────────────────────────────────────────────────────────────────────
+function KickedScreen({ onBack }) {
+  return (
+    <div style={LS.wrap}>
+      <div style={LS.bg}/>
+      <div style={LS.glow}/>
+      {Array.from({length:6}).map((_,i)=>(
+        <div key={i} className={`floatBall fb${i}`} style={LS.ball}>⚽</div>
+      ))}
+      <div className="floatBall fbT" style={{...LS.ball, fontSize:46}}>🏆</div>
+
+      <div style={LS.card}>
+        <div style={{fontSize:54, marginBottom:6}}>⏱️</div>
+        <div style={LS.title}>¡Se acabó <span style={{color:"#f97316"}}>el tiempo!</span></div>
+        <div style={{...LS.sub, marginBottom:18}}>Los 5 segundos de cortesía han volado ⚡</div>
+
+        <div style={LS.kickedBox}>
+          🤝 ¿Quieres ver los saldos durante <b>más tiempo</b>?<br/>
+          Tendrás que <b>ficharle algo a GabiPRIME</b> 😏⚽
+        </div>
+
+        <button style={LS.btn} onClick={onBack}>Volver a entrar</button>
+        <div style={LS.foot}>🔒 El saldo de GabiPRO sigue protegido</div>
+      </div>
+
+      <div style={LS.credit}>⚽ CAFELITOS MUNDIAL · GabiPRIME™</div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────────────────────
 function App({ session, onLogout }) {
@@ -191,9 +223,14 @@ function App({ session, onLogout }) {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filterUser, setFilterUser] = useState("all");
   const [selectedMgr, setSelectedMgr] = useState(null);
-  const [revealedMgr, setRevealedMgr] = useState("");     // invitado: ver 1 saldo
+  const [revealedSet, setRevealedSet] = useState(() => new Set()); // invitado: saldos revelados (show aleatorio)
+  const [kicked, setKicked]           = useState(false);  // invitado: expulsado tras el show
+  const [timeLeft, setTimeLeft]       = useState(5);      // invitado: cuenta atrás (s)
+  const showStarted = useRef(false);
   const [tokenInput, setTokenInput]   = useState("");     // owner: panel token
   const [tokenMsg, setTokenMsg]       = useState("");
+
+  const SHOW_MS = 5000; // duración del show de saldos en modo invitado
 
   // ── Aplicar un payload de dashboard al estado ──
   const applyData = (d) => {
@@ -243,6 +280,42 @@ function App({ session, onLogout }) {
 
   useEffect(() => { loadAll(); }, []);
 
+  // ── Invitado: show de saldos al azar durante SHOW_MS, luego expulsa ──
+  useEffect(() => {
+    if (!isGuest || showStarted.current) return;
+    // ids de rivales con saldo visible (el del owner viene null del servidor)
+    const ids = Object.keys(balances)
+      .map(Number)
+      .filter(id => id !== OWN_USER_ID && balances[id] != null);
+    if (ids.length === 0) return; // esperar a que carguen los datos
+    showStarted.current = true;
+
+    // Orden aleatorio
+    const shuffled = [...ids].sort(() => Math.random() - 0.5);
+    const per = Math.max(250, Math.floor(SHOW_MS / shuffled.length));
+    const timers = [];
+    shuffled.forEach((id, i) => {
+      timers.push(setTimeout(() => {
+        setRevealedSet(prev => { const n = new Set(prev); n.add(id); return n; });
+      }, Math.min(SHOW_MS - 300, i * per)));
+    });
+
+    // Cuenta atrás visible
+    let t = Math.round(SHOW_MS / 1000);
+    setTimeLeft(t);
+    const cd = setInterval(() => { t -= 1; setTimeLeft(Math.max(0, t)); }, 1000);
+
+    // Expulsión al terminar
+    const ko = setTimeout(() => {
+      clearInterval(cd);
+      sessionClear();
+      cacheClearAll();
+      setKicked(true);
+    }, SHOW_MS);
+
+    return () => { timers.forEach(clearTimeout); clearInterval(cd); clearTimeout(ko); };
+  }, [isGuest, balances]);
+
   // ── Owner: actualizar token de Biwenger en el servidor ──
   const saveToken = async () => {
     const t = tokenInput.trim();
@@ -270,7 +343,7 @@ function App({ session, onLogout }) {
   // ─── DERIVED ────────────────────────────────────────────────────────────────
   // ¿Puede el rol actual ver el saldo de este manager?
   const isOwnerId = (id) => Number(id) === OWN_USER_ID;
-  const canSee    = (id) => !isGuest ? true : (!isOwnerId(id) && Number(id) === Number(revealedMgr));
+  const canSee    = (id) => !isGuest ? true : (!isOwnerId(id) && revealedSet.has(Number(id)));
 
   const sortedMembers = Object.entries(balances)
     .map(([id,bal]) => ({
@@ -319,6 +392,11 @@ function App({ session, onLogout }) {
     if (hidden || val == null) return <span style={{color:"#cbd5e1"}}>{LOCK}</span>;
     return <span style={{...S.money, color}}>{sign}{fmt(val)}</span>;
   };
+
+  // ─── Invitado expulsado tras el show ────────────────────────────────────────
+  if (isGuest && kicked) {
+    return <KickedScreen onBack={() => { sessionClear(); cacheClearAll(); onLogout(); }} />;
+  }
 
   // ─── RENDER ─────────────────────────────────────────────────────────────────
   return (
@@ -382,8 +460,8 @@ function App({ session, onLogout }) {
       {/* Aviso invitado */}
       {isGuest && (
         <div style={S.guestBar}>
-          🔒 Modo invitado — los saldos están ocultos. Usa <b>“Ver saldo de”</b> en la pestaña Saldos para revelar uno a uno.
-          El saldo de <b>GabiPRO</b> está protegido y no es visible.
+          🎲 Modo invitado — los saldos se revelan al azar durante <b>5 segundos</b> y luego se cierra la sesión.
+          El saldo de <b>GabiPRO</b> está protegido. ¿Quieres más tiempo? Fíchale algo a <b>GabiPRIME</b> 😏
         </div>
       )}
 
@@ -408,9 +486,9 @@ function App({ session, onLogout }) {
           <div style={S.statsGrid}>
             {(isGuest ? [
               ["Managers en liga",     sortedMembers.length,                              "#94a3b8"],
-              ["Saldos visibles",      `${revealedMgr ? 1 : 0} / ${revealableMembers.length}`, "#38bdf8"],
+              ["⏱️ Tiempo restante",   `${timeLeft}s`,                                     timeLeft<=2?"#ef4444":"#38bdf8"],
+              ["Saldos revelados",     `${revealedSet.size} / ${revealableMembers.length}`, "#22c55e"],
               ["Saldo de GabiPRO",     "🔒 Protegido",                                     "#f97316"],
-              ["Modo",                 "Invitado",                                         "#60a5fa"],
             ] : [
               ["Managers en liga",    sortedMembers.length,                              "#94a3b8"],
               ["Tu saldo real (API)", ownBalance!=null ? fmt(ownBalance) : "—",          "#38bdf8"],
@@ -435,21 +513,19 @@ function App({ session, onLogout }) {
             ))}
           </div>
 
-          {/* Selector de revelado (solo invitado) */}
+          {/* Banner del show aleatorio (solo invitado) */}
           {isGuest && (
             <div style={S.revealBar}>
-              <span style={{fontSize:12,color:"#475569",fontWeight:600}}>👁️ Ver saldo de:</span>
-              <select style={S.select} value={revealedMgr} onChange={e=>setRevealedMgr(e.target.value)}>
-                <option value="">— Ninguno (todos ocultos) —</option>
-                {revealableMembers.map(m=>(
-                  <option key={m.id} value={m.id}>{m.name}</option>
-                ))}
-              </select>
-              {revealedMgr && (
-                <button style={{...S.btn, fontSize:11, padding:"6px 12px", background:"#64748b"}} onClick={()=>setRevealedMgr("")}>
-                  Ocultar
-                </button>
-              )}
+              <span style={{fontSize:22}}>🎲</span>
+              <div style={{flex:1,minWidth:180}}>
+                <div style={{fontSize:13,color:"#1d4ed8",fontWeight:700}}>
+                  Revelando saldos al azar... se cierra en {timeLeft}s
+                </div>
+                <div style={{fontSize:11,color:"#475569",marginTop:2}}>
+                  Fíchale algo a <b>GabiPRIME</b> si quieres verlos más tiempo 😏
+                </div>
+              </div>
+              <div style={S.countdownPill}>{timeLeft}</div>
             </div>
           )}
 
@@ -968,7 +1044,8 @@ const S = {
   lockBadge:   { display:"inline-block", background:"#f1f5f9", color:"#64748b", fontSize:11, padding:"3px 10px", borderRadius:12, fontWeight:700, border:"1px solid #e2e8f0" },
   badge:       { display:"inline-block", fontSize:11, padding:"3px 10px", borderRadius:12, fontWeight:600 },
   badgeColors: { rich:{background:"#dcfce7",color:"#15803d"}, mid:{background:"#fef9c3",color:"#a16207"}, tight:{background:"#fee2e2",color:"#dc2626"} },
-  revealBar:   { display:"flex", alignItems:"center", gap:10, marginBottom:16, padding:"12px 14px", background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:12, flexWrap:"wrap" },
+  revealBar:   { display:"flex", alignItems:"center", gap:12, marginBottom:16, padding:"12px 14px", background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:12, flexWrap:"wrap" },
+  countdownPill:{ width:40, height:40, borderRadius:"50%", background:"#f97316", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:800, flexShrink:0, boxShadow:"0 4px 12px rgba(249,115,22,.4)", animation:"pulseRing 1s ease-in-out infinite" },
   boardEvent:  { borderBottom:"1px solid #f1f5f9", padding:"12px 14px" },
   eventHeader: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 },
   evType:      { fontFamily:"'Barlow Condensed',sans-serif", fontSize:10, letterSpacing:2, textTransform:"uppercase", padding:"3px 8px", borderRadius:4, fontWeight:700 },
@@ -1001,6 +1078,7 @@ const LS = {
   btn:     { width:"100%", background:"linear-gradient(135deg,#f97316,#fb923c)", color:"#fff", border:"none", padding:"14px", borderRadius:12, cursor:"pointer", fontSize:16, fontWeight:700, fontFamily:"'Barlow',sans-serif", letterSpacing:1, boxShadow:"0 8px 24px rgba(249,115,22,.4)", transition:"transform .1s" },
   foot:    { fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:18 },
   credit:  { position:"relative", zIndex:2, marginTop:22, fontSize:12, color:"rgba(255,255,255,0.6)", textAlign:"center" },
+  kickedBox:{ background:"rgba(249,115,22,0.18)", border:"1px solid rgba(251,146,60,0.5)", color:"#fff", fontSize:14, lineHeight:1.6, padding:"14px 16px", borderRadius:12, marginBottom:18 },
 };
 
 // ─── KEYFRAMES + animaciones del login ───────────────────────────────────────
