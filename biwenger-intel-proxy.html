@@ -21,7 +21,11 @@ table{-webkit-overflow-scrolling:touch}
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel">
+<script type="text/babel" data-presets="react">
+// Babel fijado a 7.x (vendor/babel.min.js) → runtime JSX clásico por defecto
+// (React.createElement). En @babel/standalone 8 el default pasa a "automatic"
+// e inyecta `import {jsx} from "react/jsx-runtime"`, ilegal en un script
+// no-módulo → "import declarations may only appear at top level" → app en blanco.
 const { useState, useEffect, useCallback, useRef } = React;
 
 // ─── CONFIG ─────────────────────────────────────────────────────────────────
@@ -37,6 +41,45 @@ const RENDER_URL = "https://biwenger-worldcup.onrender.com";
 const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
   ? ""
   : RENDER_URL;
+
+// ─── PROBABILIDAD DE JUGAR (futbolfantasy) ───────────────────────────────────
+// Mapa: slug de equipo en Biwenger (inglés) → slug en futbolfantasy (español).
+// Verificados contra futbolfantasy.com/world-cup/equipos/<slug>.
+const FF_TEAM_SLUG = {
+  canada:"canada", spain:"espana", usa:"estados-unidos", norway:"noruega",
+  "ivory-coast":"costa-de-marfil", turkiye:"turquia", curacao:"curazao",
+  "congo-drc":"rd-congo", "saudi-arabia":"arabia-saudi", "south-korea":"corea-del-sur",
+  qatar:"catar", germany:"alemania", netherlands:"holanda", japan:"japon",
+  morocco:"marruecos", switzerland:"suiza", "new-zealand":"nueva-zelanda",
+  "cape-verde":"cabo-verde", "south-africa":"sudafrica", czechia:"republica-checa",
+  "czech-republic":"republica-checa", scotland:"escocia", jordan:"jordania",
+  tunisia:"tunez", algeria:"argelia", brazil:"brasil", england:"inglaterra",
+  france:"francia", portugal:"portugal", croatia:"croacia", mexico:"mexico",
+  colombia:"colombia", ecuador:"ecuador", senegal:"senegal", paraguay:"paraguay",
+  australia:"australia", uruguay:"uruguay", argentina:"argentina", iran:"iran",
+  panama:"panama", egypt:"egipto", ghana:"ghana", haiti:"haiti", uzbekistan:"uzbekistan",
+};
+const ffSlugFor = team => team && (FF_TEAM_SLUG[team.slug] || null);
+
+// Normaliza nombres para casar Biwenger ↔ futbolfantasy (acentos, letras nórdicas).
+const SPECIAL_CHARS = { "ø":"o","å":"a","æ":"ae","œ":"oe","ß":"ss","ð":"d","þ":"th","ł":"l","đ":"d","ı":"i","ŋ":"n" };
+const normName = s => (s || "").toLowerCase()
+  .replace(/[øåæœßðþłđıŋ]/g, ch => SPECIAL_CHARS[ch] || ch)
+  .normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+// Casa un nombre de Biwenger con la lista de jugadores de futbolfantasy.
+const matchProb = (name, ffPlayers) => {
+  const bn = normName(name);
+  if(!bn || !Array.isArray(ffPlayers)) return null;
+  let p = ffPlayers.find(x => x.norm===bn) ||
+          ffPlayers.find(x => x.norm.includes(bn) || bn.includes(x.norm));
+  if(p) return p;
+  const tok = bn.split(" ").sort((a,b)=>b.length-a.length)[0]; // token más largo (apellido)
+  if(tok && tok.length>=4) p = ffPlayers.find(x => x.norm.split(" ").includes(tok));
+  return p || null;
+};
+const probColor = p => p==null ? "#94a3b8" : p>=75 ? "#16a34a" : p>=50 ? "#f59e0b" : p>=25 ? "#f97316" : "#dc2626";
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 const fmt  = n => n==null ? "—" : `${(n/1_000_000).toFixed(2)}M`;
@@ -174,7 +217,9 @@ async function fetchPlayerMap(api, leagueId) {
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 function App() {
   const [token, setToken]           = useState(DEFAULT_TOKEN);
-  const [tab, setTab]               = useState("balances");
+  const [tab, setTab]               = useState("once");
+  const [lineup, setLineup]         = useState(null);       // alineación titular del usuario
+  const [probsByTeam, setProbsByTeam] = useState({});       // ffSlug -> {players:[...]}|"loading"|"error"
   const [loading, setLoading]       = useState(false);
   const [loadStep, setLoadStep]     = useState("");
   const [error, setError]           = useState(null);
@@ -208,21 +253,17 @@ function App() {
   const fetchBoard = async (sinceDate = 0) => {
     const newEvents = [];
     let offset = 0;
-    const limit = 16;
-    while(true){
-      setLoadStep(`Tablón... ${sinceDate > 0 ? "actualizando" : "cargando"} offset ${offset}`);
+    const limit = 50;            // pedimos lo máximo; biwenger pagina de 8 en 8 igualmente
+    const MAX_PAGES = 2000;      // tope de seguridad anti-bucle infinito
+    for(let page = 0; page < MAX_PAGES; page++){
+      setLoadStep(`Tablón... recorriendo board (offset ${offset})`);
       const raw = await apiRef.current(`/api/v2/league/${LEAGUE_ID}/board?offset=${offset}&limit=${limit}`);
       if(!raw) break;
       const items = Array.isArray(raw) ? raw : (raw.board || raw.events || []);
-      if(!items.length) break;
-      if(sinceDate > 0){
-        newEvents.push(...items.filter(e => e.date > sinceDate));
-        if(items.some(e => e.date <= sinceDate)) break; // llegamos a eventos ya cacheados
-      } else {
-        newEvents.push(...items);
-      }
-      if(items.length < limit) break;
-      offset += limit;
+      if(items.length === 0) break;        // página vacía → fin REAL del board
+      newEvents.push(...items);
+      offset += items.length;              // avanzamos por lo realmente recibido,
+                                           // NO por `limit` (biwenger devuelve ~8/página)
     }
     return newEvents;
   };
@@ -261,23 +302,40 @@ function App() {
   };
 
   // ── Calculate balances ──
+  // Contabiliza TODOS los eventos del board que mueven dinero. Validado contra el
+  // saldo real de la API: estimado == real (gap 0) con el board completo.
   const calcBalances = (events, memberIds) => {
     const bal = {};
     for(const id of memberIds) bal[id] = START_BUDGET;
+    const add = (id, amt) => { if(id != null && bal[id] !== undefined) bal[id] += amt; };
     for(const ev of events){
-      if(ev.type === "transfer"){
+      // transfer y adminTransfer comparten estructura: array de {from,to,amount}
+      if(ev.type === "transfer" || ev.type === "adminTransfer"){
         for(const c of (Array.isArray(ev.content) ? ev.content : [])){
           const amt = c.amount || 0;
-          // from = VENDEDOR (gana), to = COMPRADOR (pierde)
-          if(c.from?.id != null && bal[c.from.id] !== undefined) bal[c.from.id] += amt;
-          if(c.to?.id   != null && bal[c.to.id]   !== undefined) bal[c.to.id]   -= amt;
+          add(c.from?.id,  amt);   // from = VENDEDOR (gana)
+          add(c.to?.id,   -amt);   // to   = COMPRADOR (paga)
         }
       } else if(ev.type === "market"){
         for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-          const amt   = c.amount || 0;
-          const buyId = c.to?.id;  // to = COMPRADOR en mercado de pujas
-          if(buyId != null && bal[buyId] !== undefined) bal[buyId] -= amt;
+          const amt = c.amount || 0;
+          add(c.to?.id,   -amt);   // to = comprador en el mercado (paga)
+          add(c.from?.id,  amt);   // from = vendedor (si lo hay) cobra
         }
+      } else if(ev.type === "exchange"){
+        // Intercambio: content es un objeto, no un array.
+        // 'from' aporta `amount` y recibe `requestedAmount`; 'to' al revés.
+        const c      = ev.content || {};
+        const amt    = c.amount || 0;            // dinero que pone 'from'
+        const reqAmt = c.requestedAmount || 0;   // dinero que pone 'to'
+        add(c.from?.id, reqAmt - amt);
+        add(c.to?.id,   amt - reqAmt);
+      } else if(ev.type === "bonus"){
+        // Bonus de admin: array de {user, amount} (puede ser negativo).
+        for(const c of (Array.isArray(ev.content) ? ev.content : [])) add(c.user?.id, c.amount || 0);
+      } else if(ev.type === "roundFinished"){
+        // Premios de jornada: content.results[] con {user, bonus}.
+        for(const r of (ev.content?.results || [])) add(r.user?.id, r.bonus || 0);
       }
     }
     return bal;
@@ -292,7 +350,10 @@ function App() {
       const cached = forceRefresh ? { board: null, members: null } : cacheLoad();
       const cachedBoard   = cached.board;
       const cachedMembers = cached.members;
-      const sinceDate = cachedBoard ? (cachedBoard.lastEventDate || 0) : 0;
+      // Siempre re-leemos el board COMPLETO: la carga incremental + dedup por
+      // (date,type) colapsaba operaciones simultáneas (cierres de mercado/jornada
+      // comparten timestamp) y perdía ventas/compras → saldos incorrectos.
+      const sinceDate = 0;
 
       if(cachedBoard?.board?.length > 0){
         setBoard(cachedBoard.board);
@@ -328,14 +389,19 @@ function App() {
       }
       setMembers({...memberMap});
 
-      // 2. Board incremental: solo eventos nuevos desde sinceDate
-      setLoadStep(sinceDate > 0 ? `Actualizando board desde ${fmtDate(sinceDate)}...` : "Cargando board completo...");
+      // 2. Board completo (todas las páginas, sin incremental)
+      setLoadStep("Cargando board completo...");
       const newEvents  = await fetchBoard(sinceDate);
-      const prevEvents = (cachedBoard?.board && !forceRefresh) ? cachedBoard.board : [];
-      // Merge + deduplicar por (date, type) + ordenar
-      const seen = new Set(prevEvents.map(e => `${e.date}_${e.type}`));
-      const fresh = newEvents.filter(e => !seen.has(`${e.date}_${e.type}`));
-      const allBoard = [...prevEvents, ...fresh].sort((a,b) => a.date - b.date);
+      // Reconstruimos el board entero desde la API (sin fusionar con caché) para
+      // no arrastrar huecos. Deduplicamos por identidad real del evento (fecha +
+      // tipo + contenido), no solo (date,type), para no perder operaciones
+      // simultáneas distintas.
+      const evKey = e => `${e.date}_${e.type}_${JSON.stringify(e.content ?? null)}`;
+      const seen = new Set();
+      const allBoard = newEvents
+        .filter(e => { const k = evKey(e); if(seen.has(k)) return false; seen.add(k); return true; })
+        .sort((a,b) => a.date - b.date);
+      const fresh = allBoard;
       setBoard(allBoard);
 
       // Fallback member extraction del board
@@ -365,6 +431,13 @@ function App() {
         setPlayerMap({...merged});
       } catch(e){}
 
+      // 4b. Alineación titular del usuario (para la pestaña "Mi Once")
+      setLoadStep("Alineación...");
+      try {
+        const u = await apiRef.current("/api/v2/user?fields=*,lineup");
+        if(u?.lineup) setLineup(u.lineup);
+      } catch(e){}
+
       // 5. Balances estimados
       const memberIds = Object.keys(memberMap).map(Number);
       const estimated = calcBalances(allBoard, memberIds);
@@ -383,6 +456,33 @@ function App() {
   }, []);
 
   useEffect(() => { loadAll(); }, []);
+
+  // ── Cargar probabilidades de jugar de cada equipo del once (futbolfantasy) ──
+  useEffect(() => {
+    if(!lineup?.players) return;
+    const slugs = [...new Set(lineup.players.map(p => ffSlugFor(p.team)).filter(Boolean))];
+    setProbsByTeam(prev => {
+      const next = { ...prev };
+      slugs.forEach(slug => {
+        if(next[slug] && next[slug] !== "error") return; // ya cargado/cargando
+        next[slug] = "loading";
+        fetch(`${SERVER_URL}/api-local/probabilidades/${slug}`)
+          .then(r => r.json())
+          .then(j => setProbsByTeam(p => ({ ...p, [slug]: (j && j.players) ? j : "error" })))
+          .catch(() => setProbsByTeam(p => ({ ...p, [slug]: "error" })));
+      });
+      return next;
+    });
+  }, [lineup]);
+
+  // Devuelve {prob, estado, ffName} para un jugador del once, o null.
+  const getPlayerProb = (p) => {
+    const slug = ffSlugFor(p.team);
+    const entry = slug && probsByTeam[slug];
+    if(!entry || entry==="loading" || entry==="error") return entry || null;
+    const hit = matchProb(p.name, entry.players);
+    return hit ? { prob: hit.prob, estado: hit.estado, ffName: hit.name } : null;
+  };
 
   // ─── DERIVED ────────────────────────────────────────────────────────────────
   const sortedMembers = Object.entries(balances)
@@ -493,7 +593,7 @@ function App() {
 
       {/* TABS */}
       <div style={S.tabBar}>
-        {[["balances","💰 Saldos"],["board","📋 Tablón"],["market","🏪 Mercado"],["players","⚽ Jugadores"],["stats","📊 Stats"]].map(([k,l])=>(
+        {[["once","🏟️ Mi Once"],["balances","💰 Saldos"],["board","📋 Tablón"],["market","🏪 Mercado"],["players","⚽ Jugadores"],["stats","📊 Stats"]].map(([k,l])=>(
           <div key={k} style={{...S.tab, ...(tab===k?S.tabActive:{})}} onClick={()=>setTab(k)}>{l}</div>
         ))}
       </div>
@@ -517,6 +617,50 @@ function App() {
             )}
           </div>
         )}
+
+        {/* ── TAB MI ONCE ── */}
+        {tab==="once" && <>
+          {!lineup && !loading && <div style={{color:"#64748b",padding:20}}>Sin alineación cargada — pulsa 🔄 actualizar.</div>}
+          {lineup && (() => {
+            const byPos = {1:[],2:[],3:[],4:[]};
+            lineup.players.forEach(p => { (byPos[p.position] = byPos[p.position]||[]).push(p); });
+            const capId = lineup.captain?.id, strId = lineup.striker?.id;
+            const renderChip = (p) => {
+              const pr = getPlayerProb(p);
+              const isLoading = pr === "loading";
+              const prob   = (pr && typeof pr==="object") ? pr.prob   : null;
+              const estado = (pr && typeof pr==="object") ? pr.estado : null;
+              const cc = (p.country||"").toUpperCase();
+              return (
+                <div key={p.id} style={S.pitchChip} title={`${p.name} · ${p.team?.name||""}`}>
+                  <div style={S.pitchFlagWrap}>
+                    <img src={`https://static.futbolfantasy.com/flags/svg/${cc}.svg`} style={S.pitchFlag}
+                         onError={e=>{e.target.style.visibility="hidden";}}/>
+                    {p.id===capId && <span style={S.capBadge}>C</span>}
+                    {p.id===strId && p.id!==capId && <span style={{...S.capBadge,background:"#fb923c"}}>D</span>}
+                  </div>
+                  <div style={S.pitchName}>{p.name}</div>
+                  <div style={{...S.pitchProb, background:probColor(prob)}}>
+                    {isLoading ? "…" : prob!=null ? `${prob}%` : "—"}
+                    {estado && estado!=="0" ? " ⚠" : ""}
+                  </div>
+                </div>
+              );
+            };
+            return (
+              <div style={S.pitchWrap}>
+                <div style={S.pitchInner}>
+                  {[4,3,2,1].map(pos => (byPos[pos]&&byPos[pos].length>0) ? (
+                    <div key={pos} style={S.pitchRow}>{byPos[pos].map(renderChip)}</div>
+                  ) : null)}
+                </div>
+                <div style={S.pitchLegend}>
+                  Formación <strong>{lineup.type}</strong> · % = probabilidad de ser titular (futbolfantasy) · ⚠ duda/lesión · <span style={{color:"#facc15",fontWeight:700}}>C</span> capitán · <span style={{color:"#fb923c",fontWeight:700}}>D</span> delantero
+                </div>
+              </div>
+            );
+          })()}
+        </>}
 
         {/* ── TAB SALDOS ── */}
         {tab==="balances" && <>
@@ -561,12 +705,25 @@ function App() {
                 {sortedMembers.map((m,i) => {
                   let spent=0, earned=0;
                   for(const ev of board){
-                    if(ev.type==="transfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                    if(ev.type==="transfer"||ev.type==="adminTransfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
                       if(c.to?.id  ===m.id) spent  += c.amount||0;  // to=comprador
                       if(c.from?.id===m.id) earned += c.amount||0;  // from=vendedor
                     }
                     if(ev.type==="market") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-                      if(c.to?.id===m.id) spent += c.amount||0;
+                      if(c.to?.id  ===m.id) spent  += c.amount||0;
+                      if(c.from?.id===m.id) earned += c.amount||0;  // venta en mercado
+                    }
+                    if(ev.type==="exchange"){
+                      const c = ev.content || {};
+                      const amt=c.amount||0, reqAmt=c.requestedAmount||0;
+                      if(c.from?.id===m.id){ spent += amt;    earned += reqAmt; }  // from paga amt, recibe reqAmt
+                      if(c.to?.id  ===m.id){ spent += reqAmt; earned += amt;    }  // to paga reqAmt, recibe amt
+                    }
+                    if(ev.type==="bonus") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                      if(c.user?.id===m.id){ const a=c.amount||0; if(a>=0) earned+=a; else spent+=-a; }
+                    }
+                    if(ev.type==="roundFinished") for(const r of (ev.content?.results||[])){
+                      if(r.user?.id===m.id) earned += r.bonus||0;  // premio de jornada
                     }
                   }
                   const delta      = m.balance - START_BUDGET;
@@ -580,18 +737,43 @@ function App() {
 
                   // Trazabilidad: todas las operaciones de este manager
                   const txs = !isExpanded ? [] : board.flatMap(ev => {
-                    if(ev.type !== "transfer" && ev.type !== "market") return [];
+                    if(ev.type === "exchange"){
+                      const c = ev.content || {};
+                      if(c.from?.id!==m.id && c.to?.id!==m.id) return [];
+                      const amt=c.amount||0, reqAmt=c.requestedAmount||0;
+                      const isFrom = c.from?.id===m.id;
+                      const pays   = isFrom ? amt    : reqAmt;  // efectivo que entrega m
+                      const gets   = isFrom ? reqAmt : amt;     // efectivo que recibe m
+                      const contra = (isFrom ? c.to?.name : c.from?.name) || "Intercambio";
+                      const rows=[];
+                      if(pays>0) rows.push({ date:ev.date, pname:"💵 Efectivo", pteam:null, amount:pays, isBuy:true,  contra, txType:"exchange" });
+                      if(gets>0) rows.push({ date:ev.date, pname:"💵 Efectivo", pteam:null, amount:gets, isBuy:false, contra, txType:"exchange" });
+                      return rows;
+                    }
+                    if(ev.type === "bonus"){
+                      const rows=[];
+                      for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                        if(c.user?.id===m.id){ const a=c.amount||0; if(a!==0) rows.push({ date:ev.date, pname:"🎁 Bonus admin", pteam:null, amount:Math.abs(a), isBuy:a<0, contra:ev.author?.name||"Admin", txType:"bonus" }); }
+                      }
+                      return rows;
+                    }
+                    if(ev.type === "roundFinished"){
+                      const r = (ev.content?.results||[]).find(x=>x.user?.id===m.id);
+                      if(!r || !r.bonus) return [];
+                      return [{ date:ev.date, pname:"🏆 Premio jornada", pteam:null, amount:r.bonus, isBuy:false, contra:ev.content?.round?.name||"Jornada", txType:"roundFinished" }];
+                    }
+                    if(ev.type !== "transfer" && ev.type !== "market" && ev.type !== "adminTransfer") return [];
                     return (Array.isArray(ev.content) ? ev.content : [])
                       .filter(c => c.from?.id===m.id || c.to?.id===m.id)
                       .map(c => {
-                        // from=VENDEDOR, to=COMPRADOR
-                        const isBuy  = ev.type==="market" ? true : c.to?.id===m.id;
+                        // from=VENDEDOR (cobra), to=COMPRADOR (paga) — vale para market/transfer/adminTransfer
+                        const isBuy  = c.to?.id===m.id;
                         const pid    = typeof c.player==="object" ? c.player?.id : c.player;
                         const pname  = typeof c.player==="object" ? c.player?.name : (playerMap[pid]?.name || `#${pid}`);
                         const pteam  = playerMap[pid]?.team || null;
                         const contra = isBuy
-                          ? (ev.type==="market" ? "Mercado libre" : (c.from?.name || "Mercado libre"))
-                          : (c.to?.name || "Mercado libre");
+                          ? (c.from?.name || "Mercado libre")
+                          : (c.to?.name   || "Mercado libre");
                         return { date: ev.date, pname, pteam, amount: c.amount||0, isBuy, contra, txType: ev.type };
                       });
                   }).sort((a,b)=>b.date-a.date);
@@ -903,6 +1085,10 @@ function App() {
                 for(const ev of board){
                   if(ev.type==="transfer"||ev.type==="market")
                     for(const c of (Array.isArray(ev.content) ? ev.content : [])) t+=c.amount||0;
+                  else if(ev.type==="exchange"){
+                    const c = ev.content || {};
+                    t += (c.amount||0) + (c.requestedAmount||0);
+                  }
                 }
                 return fmt(t);
               })()],
@@ -924,12 +1110,25 @@ function App() {
                 {sortedMembers.map(m=>{
                   let spent=0, earned=0, ops=0;
                   for(const ev of board){
-                    if(ev.type==="transfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                    if(ev.type==="transfer"||ev.type==="adminTransfer") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
                       if(c.to?.id  ===m.id){spent +=c.amount||0;ops++;}  // to=comprador
                       if(c.from?.id===m.id) earned+=c.amount||0;          // from=vendedor
                     }
                     if(ev.type==="market") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
-                      if(c.to?.id===m.id){spent+=c.amount||0;ops++;}
+                      if(c.to?.id  ===m.id){spent +=c.amount||0;ops++;}
+                      if(c.from?.id===m.id) earned+=c.amount||0;  // venta en mercado
+                    }
+                    if(ev.type==="exchange"){
+                      const c = ev.content || {};
+                      const amt=c.amount||0, reqAmt=c.requestedAmount||0;
+                      if(c.from?.id===m.id){ spent+=amt;    earned+=reqAmt; ops++; }
+                      if(c.to?.id  ===m.id){ spent+=reqAmt; earned+=amt;    ops++; }
+                    }
+                    if(ev.type==="bonus") for(const c of (Array.isArray(ev.content) ? ev.content : [])){
+                      if(c.user?.id===m.id){ const a=c.amount||0; if(a>=0) earned+=a; else spent+=-a; }
+                    }
+                    if(ev.type==="roundFinished") for(const r of (ev.content?.results||[])){
+                      if(r.user?.id===m.id) earned+=r.bonus||0;  // premio de jornada
                     }
                   }
                   const net = earned - spent;
@@ -971,6 +1170,17 @@ const S = {
   tab:         { fontFamily:"'Barlow Condensed',sans-serif", fontSize:12, letterSpacing:1, textTransform:"uppercase", padding:"13px 14px", cursor:"pointer", color:"#94a3b8", borderBottom:"3px solid transparent", fontWeight:700, whiteSpace:"nowrap", flexShrink:0, touchAction:"manipulation" },
   tabActive:   { color:"#f97316", borderBottomColor:"#f97316" },
   content:     { padding:16 },
+  // ── Pestaña Mi Once (campo) ──
+  pitchWrap:   { display:"flex", flexDirection:"column", alignItems:"center", gap:12 },
+  pitchInner:  { width:"100%", maxWidth:440, aspectRatio:"5 / 7", backgroundImage:"url('campo.jpg')", backgroundSize:"cover", backgroundPosition:"center", borderRadius:14, boxShadow:"0 6px 22px rgba(0,0,0,.22)", display:"flex", flexDirection:"column", justifyContent:"space-around", padding:"20px 6px" },
+  pitchRow:    { display:"flex", justifyContent:"space-around", alignItems:"flex-start" },
+  pitchChip:   { display:"flex", flexDirection:"column", alignItems:"center", gap:3, width:66 },
+  pitchFlagWrap:{ position:"relative", lineHeight:0 },
+  pitchFlag:   { width:36, height:36, borderRadius:"50%", objectFit:"cover", border:"2px solid #fff", boxShadow:"0 1px 5px rgba(0,0,0,.5)", background:"#e2e8f0" },
+  capBadge:    { position:"absolute", top:-5, right:-7, background:"#facc15", color:"#1e293b", fontSize:9, fontWeight:800, borderRadius:"50%", width:16, height:16, display:"flex", alignItems:"center", justifyContent:"center", border:"1.5px solid #fff" },
+  pitchName:   { fontSize:11, fontWeight:700, color:"#fff", textShadow:"0 1px 3px rgba(0,0,0,.95)", textAlign:"center", lineHeight:1.05, maxWidth:72, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  pitchProb:   { fontSize:11, fontWeight:800, color:"#fff", borderRadius:8, padding:"1px 8px", textShadow:"0 1px 2px rgba(0,0,0,.45)", minWidth:34, textAlign:"center" },
+  pitchLegend: { fontSize:11, color:"#64748b", textAlign:"center", maxWidth:440, lineHeight:1.5 },
   loadBar:     { height:3, background:"#fed7aa", borderRadius:3, overflow:"hidden", marginBottom:20 },
   loadBarInner:{ height:"100%", width:"40%", background:"linear-gradient(90deg,#f97316,#fb923c)", animation:"slide 1s ease-in-out infinite", borderRadius:3 },
   errorBox:    { background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, padding:14, marginBottom:14 },

@@ -74,6 +74,57 @@ app.get("/api-local/alert-status", (req, res) => {
   });
 });
 
+// ── Endpoint local: probabilidades de jugar (scrape futbolfantasy) ───────────
+// Descarga la página del equipo en futbolfantasy.com y extrae, por jugador,
+// su probabilidad de ser titular (%) y su estado (lesión/duda). Cacheado 30 min.
+const FF_CACHE = new Map(); // slug -> { ts, data }
+const FF_TTL   = 30 * 60 * 1000;
+const SPECIAL_CHARS = { "ø":"o","å":"a","æ":"ae","œ":"oe","ß":"ss","ð":"d","þ":"th","ł":"l","đ":"d","ı":"i","ŋ":"n" };
+const normName = s => (s || "")
+  .toLowerCase()
+  .replace(/[øåæœßðþłđıŋ]/g, ch => SPECIAL_CHARS[ch] || ch)  // letras nórdicas/especiales que NFD no descompone
+  .normalize("NFD").replace(/[̀-ͯ]/g, "")                     // quita acentos (combining marks)
+  .replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+const parseFutbolfantasy = (html) => {
+  const players = [];
+  const seen = new Set();
+  const re = /<a class="camiseta[\s\S]*?<\/a>/g;
+  let m;
+  while ((m = re.exec(html))) {
+    const el   = m[0];
+    const prob = (el.match(/data-probabilidad="(\d+)%"/) || [])[1];
+    const name = (el.match(/alt="([^"]+)"/) || [])[1];
+    if (!name || prob === undefined) continue;
+    const estado = (el.match(/data-estado="([^"]*)"/) || [])[1] || "0";
+    const slug   = (el.match(/href="[^"]*\/jugadores\/([^\/"]+)/) || [])[1] || "";
+    if (seen.has(name)) continue;
+    seen.add(name);
+    players.push({ name, norm: normName(name), prob: +prob, estado, slug });
+  }
+  return players;
+};
+
+app.get("/api-local/probabilidades/:slug", async (req, res) => {
+  const slug = String(req.params.slug || "").replace(/[^a-z0-9-]/gi, "");
+  if (!slug) return res.status(400).json({ error: "slug inválido" });
+  const hit = FF_CACHE.get(slug);
+  if (hit && Date.now() - hit.ts < FF_TTL) return res.json({ ...hit.data, cached: true });
+  try {
+    const url = `https://www.futbolfantasy.com/world-cup/equipos/${slug}`;
+    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/121.0" } });
+    if (!r.ok) return res.status(r.status).json({ error: `futbolfantasy HTTP ${r.status}`, slug });
+    const html = await r.text();
+    const players = parseFutbolfantasy(html);
+    const data = { slug, count: players.length, players };
+    FF_CACHE.set(slug, { ts: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error("FF scrape error:", e.message);
+    res.status(502).json({ error: "scrape error", detail: e.message, slug });
+  }
+});
+
 // ── Proxy /api/* → biwenger.as.com ───────────────────────────────────────────
 app.use(
   "/api",
