@@ -97,10 +97,11 @@ const parseFutbolfantasy = (html) => {
     const name = (el.match(/alt="([^"]+)"/) || [])[1];
     if (!name || prob === undefined) continue;
     const estado = (el.match(/data-estado="([^"]*)"/) || [])[1] || "0";
+    const nac    = (el.match(/data-nacionalidad="([^"]*)"/) || [])[1] || "";
     const slug   = (el.match(/href="[^"]*\/jugadores\/([^\/"]+)/) || [])[1] || "";
     if (seen.has(name)) continue;
     seen.add(name);
-    players.push({ name, norm: normName(name), prob: +prob, estado, slug });
+    players.push({ name, norm: normName(name), prob: +prob, estado, nac, slug });
   }
   return players;
 };
@@ -116,7 +117,11 @@ app.get("/api-local/probabilidades/:slug", async (req, res) => {
     if (!r.ok) return res.status(r.status).json({ error: `futbolfantasy HTTP ${r.status}`, slug });
     const html = await r.text();
     const players = parseFutbolfantasy(html);
-    const data = { slug, count: players.length, players };
+    // bandera del equipo = nacionalidad más frecuente entre sus jugadores
+    const counts = {};
+    players.forEach(p => { if (p.nac) counts[p.nac] = (counts[p.nac] || 0) + 1; });
+    const flag = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+    const data = { slug, count: players.length, flag, players };
     FF_CACHE.set(slug, { ts: Date.now(), data });
     res.json(data);
   } catch (e) {

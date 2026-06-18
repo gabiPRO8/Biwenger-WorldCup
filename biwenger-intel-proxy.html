@@ -58,6 +58,9 @@ const FF_TEAM_SLUG = {
   colombia:"colombia", ecuador:"ecuador", senegal:"senegal", paraguay:"paraguay",
   australia:"australia", uruguay:"uruguay", argentina:"argentina", iran:"iran",
   panama:"panama", egypt:"egipto", ghana:"ghana", haiti:"haiti", uzbekistan:"uzbekistan",
+  // slugs que Biwenger ya da en español o con otra forma:
+  "nueva-zelanda":"nueva-zelanda", "cabo-verde":"cabo-verde", iraq:"irak",
+  bosnia:"bosnia-herzegovina", belgium:"belgica", austria:"austria", sweden:"suecia",
 };
 const ffSlugFor = team => team && (FF_TEAM_SLUG[team.slug] || null);
 
@@ -220,6 +223,10 @@ function App() {
   const [tab, setTab]               = useState("once");
   const [lineup, setLineup]         = useState(null);       // alineación titular del usuario
   const [probsByTeam, setProbsByTeam] = useState({});       // ffSlug -> {players:[...]}|"loading"|"error"
+  const [playersDB, setPlayersDB]   = useState(null);       // id -> {name, teamID, position}
+  const [teamsDB, setTeamsDB]       = useState({});         // teamID -> {name, slug}
+  const [leagueUsers, setLeagueUsers] = useState(null);     // [{id,name,players:[ids]}] plantillas rivales
+  const [expandedRival, setExpandedRival] = useState(null);
   const [loading, setLoading]       = useState(false);
   const [loadStep, setLoadStep]     = useState("");
   const [error, setError]           = useState(null);
@@ -457,23 +464,63 @@ function App() {
 
   useEffect(() => { loadAll(); }, []);
 
-  // ── Cargar probabilidades de jugar de cada equipo del once (futbolfantasy) ──
+  // ── Cargador de probabilidades en cola (throttled, evita 429 de futbolfantasy) ──
+  const probQ = useRef({ pending: [], running: false, handled: new Set() });
+  const enqueueProbs = useCallback((slugs) => {
+    const st = probQ.current;
+    const fresh = [];
+    (slugs || []).forEach(s => { if(s && !st.handled.has(s)){ st.handled.add(s); st.pending.push(s); fresh.push(s); } });
+    if(fresh.length) setProbsByTeam(prev => { const n = {...prev}; fresh.forEach(s => { if(!n[s]) n[s] = "loading"; }); return n; });
+    const run = () => {
+      if(st.running) return;
+      const slug = st.pending.shift();
+      if(!slug) return;
+      st.running = true;
+      fetch(`${SERVER_URL}/api-local/probabilidades/${slug}`)
+        .then(r => r.json())
+        .then(j => setProbsByTeam(p => ({ ...p, [slug]: (j && j.players) ? j : "error" })))
+        .catch(() => setProbsByTeam(p => ({ ...p, [slug]: "error" })))
+        .finally(() => { st.running = false; setTimeout(run, 200); });
+    };
+    run();
+  }, []);
+
+  // ffSlug a partir del teamID (vía teamsDB de Biwenger)
+  const ffSlugForTeamId = (teamID) => { const ts = teamsDB[teamID]?.slug; return ts ? (FF_TEAM_SLUG[ts] || null) : null; };
+
+  // Probabilidades del once propio
   useEffect(() => {
     if(!lineup?.players) return;
-    const slugs = [...new Set(lineup.players.map(p => ffSlugFor(p.team)).filter(Boolean))];
-    setProbsByTeam(prev => {
-      const next = { ...prev };
-      slugs.forEach(slug => {
-        if(next[slug] && next[slug] !== "error") return; // ya cargado/cargando
-        next[slug] = "loading";
-        fetch(`${SERVER_URL}/api-local/probabilidades/${slug}`)
-          .then(r => r.json())
-          .then(j => setProbsByTeam(p => ({ ...p, [slug]: (j && j.players) ? j : "error" })))
-          .catch(() => setProbsByTeam(p => ({ ...p, [slug]: "error" })));
-      });
-      return next;
-    });
+    enqueueProbs([...new Set(lineup.players.map(p => ffSlugFor(p.team)).filter(Boolean))]);
   }, [lineup]);
+
+  // Carga de datos de rivales (1560 jugadores + 48 equipos + plantillas de los 20 managers)
+  const loadRivalsData = useCallback(async () => {
+    try {
+      const [data, lg] = await Promise.all([
+        apiRef.current("/api/v2/competitions/world-cup/data?lang=es&score=3"),
+        apiRef.current("/api/v2/league?include=all&fields=*,users(id,name,players)"),
+      ]);
+      const pdb = {};
+      const pls = data?.players ? (Array.isArray(data.players) ? data.players : Object.values(data.players)) : [];
+      pls.forEach(p => { pdb[p.id] = { name: p.name, teamID: p.teamID, position: p.position }; });
+      const tdb = {};
+      const tms = data?.teams ? (Array.isArray(data.teams) ? data.teams : Object.values(data.teams)) : [];
+      tms.forEach(t => { tdb[t.id] = { name: t.name, slug: t.slug }; });
+      setPlayersDB(pdb); setTeamsDB(tdb);
+      setLeagueUsers((lg?.users || []).map(u => ({ id: u.id, name: u.name, players: (u.players || []).map(x => x.id) })));
+    } catch(e){ /* silencioso: la pestaña mostrará el aviso */ }
+  }, []);
+
+  useEffect(() => { if(tab==="rivales" && !leagueUsers) loadRivalsData(); }, [tab]);
+
+  // Cuando hay datos de rivales, encolar probabilidades de todos sus equipos
+  useEffect(() => {
+    if(!leagueUsers || !playersDB) return;
+    const slugs = new Set();
+    leagueUsers.forEach(u => u.players.forEach(pid => { const ff = playersDB[pid] && ffSlugForTeamId(playersDB[pid].teamID); if(ff) slugs.add(ff); }));
+    enqueueProbs([...slugs]);
+  }, [leagueUsers, playersDB, teamsDB]);
 
   // Devuelve {prob, estado, ffName} para un jugador del once, o null.
   const getPlayerProb = (p) => {
@@ -482,6 +529,22 @@ function App() {
     if(!entry || entry==="loading" || entry==="error") return entry || null;
     const hit = matchProb(p.name, entry.players);
     return hit ? { prob: hit.prob, estado: hit.estado, ffName: hit.name } : null;
+  };
+
+  // Datos enriquecidos de un jugador de plantilla rival (por id)
+  const rivalPlayerInfo = (pid) => {
+    const pl = playersDB?.[pid];
+    if(!pl) return { name: `#${pid}`, prob: null };
+    const ff = ffSlugForTeamId(pl.teamID);
+    const entry = ff && probsByTeam[ff];
+    const loading = entry === "loading";
+    let prob = null, estado = null, nac = null;
+    if(entry && typeof entry === "object"){
+      const hit = matchProb(pl.name, entry.players);
+      if(hit){ prob = hit.prob; estado = hit.estado; nac = hit.nac; }
+      nac = nac || entry.flag;
+    }
+    return { name: pl.name, teamName: teamsDB[pl.teamID]?.name, position: pl.position, prob, estado, nac, loading };
   };
 
   // ─── DERIVED ────────────────────────────────────────────────────────────────
@@ -593,7 +656,7 @@ function App() {
 
       {/* TABS */}
       <div style={S.tabBar}>
-        {[["once","🏟️ Mi Once"],["balances","💰 Saldos"],["board","📋 Tablón"],["market","🏪 Mercado"],["players","⚽ Jugadores"],["stats","📊 Stats"]].map(([k,l])=>(
+        {[["once","🏟️ Mi Once"],["rivales","👥 Rivales"],["balances","💰 Saldos"],["board","📋 Tablón"],["market","🏪 Mercado"],["players","⚽ Jugadores"],["stats","📊 Stats"]].map(([k,l])=>(
           <div key={k} style={{...S.tab, ...(tab===k?S.tabActive:{})}} onClick={()=>setTab(k)}>{l}</div>
         ))}
       </div>
@@ -658,6 +721,57 @@ function App() {
                   Formación <strong>{lineup.type}</strong> · % = probabilidad de ser titular (futbolfantasy) · ⚠ duda/lesión · <span style={{color:"#facc15",fontWeight:700}}>C</span> capitán · <span style={{color:"#fb923c",fontWeight:700}}>D</span> delantero
                 </div>
               </div>
+            );
+          })()}
+        </>}
+
+        {/* ── TAB RIVALES ── */}
+        {tab==="rivales" && <>
+          {!leagueUsers && <div style={{color:"#64748b",padding:20}}>Cargando plantillas de los managers y probabilidades…</div>}
+          {leagueUsers && (() => {
+            const cards = leagueUsers.map(u => {
+              const players = u.players.map(rivalPlayerInfo).sort((a,b) => (b.prob??-1) - (a.prob??-1));
+              const titulares = players.filter(p => p.prob!=null && p.prob>=60).length;
+              return { id:u.id, name:u.name, players, titulares, total:players.length, isOwn:u.id===OWN_USER_ID };
+            }).sort((a,b) => b.titulares - a.titulares);
+            return (
+              <>
+                <div style={S.sectionTitle}>Plantillas rivales · {cards.length} managers · probabilidad de ser titular en su selección (futbolfantasy)</div>
+                {cards.map(c => {
+                  const open = expandedRival===c.id;
+                  return (
+                    <div key={c.id} style={{...S.card, marginBottom:10, padding:0, ...(c.isOwn?{border:"1px solid #fdba74"}:{})}}>
+                      <div style={S.rivalHeader} onClick={()=>setExpandedRival(open?null:c.id)}>
+                        <div style={{display:"flex",alignItems:"center",gap:10}}>
+                          <div style={S.avatar}>{initials(c.name)}</div>
+                          <span style={{fontWeight:700}}>{c.name}</span>
+                          {c.isOwn && <span style={S.ownBadge}>TÚ</span>}
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:14}}>
+                          <span style={{fontSize:13}}><strong style={{color:"#16a34a"}}>{c.titulares}</strong> <span style={{color:"#94a3b8"}}>titulares prob.</span></span>
+                          <span style={{fontSize:12,color:"#94a3b8"}}>{c.total} jug.</span>
+                          <span style={{fontSize:11,color:"#475569"}}>{open?"▲":"▼"}</span>
+                        </div>
+                      </div>
+                      {open && (
+                        <div style={{padding:"2px 12px 12px"}}>
+                          {c.players.map((p,i)=>(
+                            <div key={i} style={S.rivalRow}>
+                              <img src={`https://static.futbolfantasy.com/flags/svg/${(p.nac||"").toUpperCase()}.svg`} style={S.rivalFlag} onError={e=>{e.target.style.visibility="hidden";}}/>
+                              <span style={{flex:1,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                              {p.position!=null && <span style={{...S.posTag,background:posColor(p.position)+"22",color:posColor(p.position),border:`1px solid ${posColor(p.position)}44`}}>{posLabel(p.position)}</span>}
+                              <span style={{fontSize:11,color:"#94a3b8",width:88,textAlign:"right",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.teamName||""}</span>
+                              <span style={{...S.pitchProb,background:probColor(p.prob),minWidth:44}}>
+                                {p.loading?"…":p.prob!=null?`${p.prob}%`:"—"}{p.estado&&p.estado!=="0"?" ⚠":""}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
             );
           })()}
         </>}
@@ -1181,6 +1295,10 @@ const S = {
   pitchName:   { fontSize:11, fontWeight:700, color:"#fff", textShadow:"0 1px 3px rgba(0,0,0,.95)", textAlign:"center", lineHeight:1.05, maxWidth:72, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
   pitchProb:   { fontSize:11, fontWeight:800, color:"#fff", borderRadius:8, padding:"1px 8px", textShadow:"0 1px 2px rgba(0,0,0,.45)", minWidth:34, textAlign:"center" },
   pitchLegend: { fontSize:11, color:"#64748b", textAlign:"center", maxWidth:440, lineHeight:1.5 },
+  // ── Pestaña Rivales ──
+  rivalHeader: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 14px", cursor:"pointer", userSelect:"none" },
+  rivalRow:    { display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom:"1px solid #f1f5f9" },
+  rivalFlag:   { width:22, height:22, borderRadius:"50%", objectFit:"cover", border:"1px solid #e2e8f0", background:"#e2e8f0", flexShrink:0 },
   loadBar:     { height:3, background:"#fed7aa", borderRadius:3, overflow:"hidden", marginBottom:20 },
   loadBarInner:{ height:"100%", width:"40%", background:"linear-gradient(90deg,#f97316,#fb923c)", animation:"slide 1s ease-in-out infinite", borderRadius:3 },
   errorBox:    { background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, padding:14, marginBottom:14 },
