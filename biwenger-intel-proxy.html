@@ -1140,7 +1140,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
     if (!src) return fail("No se encontró el código de la app (#app-src).");
     try {
       var out = window.Babel.transform(src.textContent, {
-        presets: ["react"],
+        // runtime "classic" → usa React.createElement (React es global vía UMD).
+        // El runtime "automatic" inyectaría `import {jsx} from "react/jsx-runtime"`,
+        // que no se puede ejecutar con eval ("Cannot use import statement outside a module").
+        presets: [["react", { runtime: "classic" }]],
+        sourceType: "script",
         filename: "biwenger-intel-app.jsx"
       }).code;
       (0, eval)(out); // ejecuta en ámbito global; React/ReactDOM son globales
